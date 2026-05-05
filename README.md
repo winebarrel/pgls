@@ -92,6 +92,9 @@ client.start();
 - **Go-aware** — inside `.go` files, all of the above only fires
   when the cursor sits inside a string literal whose contents look
   like SQL (begins with `SELECT`/`INSERT`/`UPDATE`/...).
+- **Hot reload** — the schema directory is watched; editing or adding
+  `.sql` files triggers a reload (debounced 200 ms) and republishes
+  diagnostics for all open documents.
 
 ## Limitations
 

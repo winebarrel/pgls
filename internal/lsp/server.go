@@ -3,12 +3,16 @@ package lsp
 import (
 	"encoding/json"
 	"fmt"
+	"io/fs"
 	"log"
 	"net/url"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
+	"github.com/fsnotify/fsnotify"
 	"github.com/tliron/glsp"
 	protocol "github.com/tliron/glsp/protocol_3_16"
 	"github.com/tliron/glsp/server"
@@ -29,11 +33,18 @@ var (
 	docsMu sync.Mutex
 	docs   = map[string]string{}
 
+	schemaMu     sync.RWMutex
 	loadedSchema *schema.Schema
+
+	notify glsp.NotifyFunc
+
+	cliDir       string
+	watcherOnce  sync.Once
+	watcherStart sync.Mutex // serializes attempts to (re)configure the watcher
 )
 
-func Run(initialSchema *schema.Schema) error {
-	loadedSchema = initialSchema
+func Run(cliSchemaDir string) error {
+	cliDir = cliSchemaDir
 	handler = protocol.Handler{
 		Initialize:             initialize,
 		Initialized:            func(*glsp.Context, *protocol.InitializedParams) error { return nil },
@@ -53,14 +64,16 @@ type initOptions struct {
 	SchemaDir string `json:"schemaDir"`
 }
 
-func initialize(_ *glsp.Context, params *protocol.InitializeParams) (any, error) {
-	if dir := schemaDirFromOptions(params); dir != "" {
-		if s, err := schema.Load(dir); err != nil {
-			log.Printf("schema load %q: %v", dir, err)
-		} else {
-			loadedSchema = s
-			log.Printf("loaded schema from %s (%d tables)", dir, len(s.Tables))
-		}
+func initialize(ctx *glsp.Context, params *protocol.InitializeParams) (any, error) {
+	notify = ctx.Notify
+
+	dir := schemaDirFromOptions(params)
+	if dir == "" {
+		dir = cliDir
+	}
+	if dir != "" {
+		loadAndSetSchema(dir)
+		startSchemaWatcher(dir)
 	}
 
 	caps := handler.CreateServerCapabilities()
@@ -126,15 +139,127 @@ func uriToPath(uri string) string {
 	return u.Path
 }
 
-func didOpen(ctx *glsp.Context, params *protocol.DidOpenTextDocumentParams) error {
+func currentSchema() *schema.Schema {
+	schemaMu.RLock()
+	defer schemaMu.RUnlock()
+	return loadedSchema
+}
+
+func loadAndSetSchema(dir string) {
+	s, err := schema.Load(dir)
+	if err != nil {
+		log.Printf("schema load %q: %v", dir, err)
+		return
+	}
+	schemaMu.Lock()
+	loadedSchema = s
+	schemaMu.Unlock()
+	log.Printf("loaded schema from %s (%d tables)", dir, len(s.Tables))
+}
+
+// startSchemaWatcher launches a single fsnotify-based watcher on dir
+// that reloads the schema and republishes diagnostics when any .sql
+// file changes. It is a no-op on subsequent calls — the watcher is
+// established only once per process.
+func startSchemaWatcher(dir string) {
+	watcherOnce.Do(func() {
+		watcherStart.Lock()
+		defer watcherStart.Unlock()
+
+		w, err := fsnotify.NewWatcher()
+		if err != nil {
+			log.Printf("schema watcher: %v", err)
+			return
+		}
+		if err := addDirsRecursively(w, dir); err != nil {
+			log.Printf("schema watcher add %q: %v", dir, err)
+			w.Close()
+			return
+		}
+
+		go runWatcher(w, dir)
+	})
+}
+
+func addDirsRecursively(w *fsnotify.Watcher, root string) error {
+	return filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			return w.Add(p)
+		}
+		return nil
+	})
+}
+
+func runWatcher(w *fsnotify.Watcher, dir string) {
+	defer w.Close()
+
+	var (
+		timer   *time.Timer
+		timerMu sync.Mutex
+	)
+	schedule := func() {
+		timerMu.Lock()
+		defer timerMu.Unlock()
+		if timer != nil {
+			timer.Stop()
+		}
+		timer = time.AfterFunc(200*time.Millisecond, func() {
+			loadAndSetSchema(dir)
+			republishAllDiagnostics()
+		})
+	}
+
+	for {
+		select {
+		case ev, ok := <-w.Events:
+			if !ok {
+				return
+			}
+			// Watch new subdirectories as they appear.
+			if ev.Op&fsnotify.Create != 0 {
+				if info, err := os.Stat(ev.Name); err == nil && info.IsDir() {
+					_ = w.Add(ev.Name)
+				}
+			}
+			if strings.EqualFold(filepath.Ext(ev.Name), ".sql") {
+				schedule()
+			}
+		case err, ok := <-w.Errors:
+			if !ok {
+				return
+			}
+			log.Printf("schema watcher: %v", err)
+		}
+	}
+}
+
+func republishAllDiagnostics() {
+	if notify == nil {
+		return
+	}
+	docsMu.Lock()
+	uris := make([]string, 0, len(docs))
+	for u := range docs {
+		uris = append(uris, u)
+	}
+	docsMu.Unlock()
+	for _, u := range uris {
+		publishDiagnostics(u)
+	}
+}
+
+func didOpen(_ *glsp.Context, params *protocol.DidOpenTextDocumentParams) error {
 	docsMu.Lock()
 	docs[params.TextDocument.URI] = params.TextDocument.Text
 	docsMu.Unlock()
-	publishDiagnostics(ctx, params.TextDocument.URI)
+	publishDiagnostics(params.TextDocument.URI)
 	return nil
 }
 
-func didChange(ctx *glsp.Context, params *protocol.DidChangeTextDocumentParams) error {
+func didChange(_ *glsp.Context, params *protocol.DidChangeTextDocumentParams) error {
 	docsMu.Lock()
 	text := docs[params.TextDocument.URI]
 	for _, change := range params.ContentChanges {
@@ -149,24 +274,30 @@ func didChange(ctx *glsp.Context, params *protocol.DidChangeTextDocumentParams) 
 	}
 	docs[params.TextDocument.URI] = text
 	docsMu.Unlock()
-	publishDiagnostics(ctx, params.TextDocument.URI)
+	publishDiagnostics(params.TextDocument.URI)
 	return nil
 }
 
-func didClose(ctx *glsp.Context, params *protocol.DidCloseTextDocumentParams) error {
+func didClose(_ *glsp.Context, params *protocol.DidCloseTextDocumentParams) error {
 	docsMu.Lock()
 	delete(docs, params.TextDocument.URI)
 	docsMu.Unlock()
 	// Clear any prior diagnostics so stale errors don't linger.
-	ctx.Notify(protocol.ServerTextDocumentPublishDiagnostics, &protocol.PublishDiagnosticsParams{
-		URI:         params.TextDocument.URI,
-		Diagnostics: []protocol.Diagnostic{},
-	})
+	if notify != nil {
+		notify(protocol.ServerTextDocumentPublishDiagnostics, &protocol.PublishDiagnosticsParams{
+			URI:         params.TextDocument.URI,
+			Diagnostics: []protocol.Diagnostic{},
+		})
+	}
 	return nil
 }
 
-func publishDiagnostics(ctx *glsp.Context, uri string) {
-	if loadedSchema == nil {
+func publishDiagnostics(uri string) {
+	if notify == nil {
+		return
+	}
+	s := currentSchema()
+	if s == nil {
 		return
 	}
 	docsMu.Lock()
@@ -181,12 +312,12 @@ func publishDiagnostics(ctx *glsp.Context, uri string) {
 
 	if strings.HasSuffix(uri, ".go") {
 		for _, blk := range goast.FindAllSQL(src) {
-			for _, iss := range sqlctx.Lint(blk.SQL, loadedSchema) {
+			for _, iss := range sqlctx.Lint(blk.SQL, s) {
 				diags = append(diags, makeDiagnostic(src, blk.StartByte+iss.Start, blk.StartByte+iss.End, iss.Message))
 			}
 		}
 	} else {
-		for _, iss := range sqlctx.Lint(text, loadedSchema) {
+		for _, iss := range sqlctx.Lint(text, s) {
 			diags = append(diags, makeDiagnostic(src, iss.Start, iss.End, iss.Message))
 		}
 	}
@@ -198,7 +329,7 @@ func publishDiagnostics(ctx *glsp.Context, uri string) {
 		diags[i].Source = &source
 	}
 
-	ctx.Notify(protocol.ServerTextDocumentPublishDiagnostics, &protocol.PublishDiagnosticsParams{
+	notify(protocol.ServerTextDocumentPublishDiagnostics, &protocol.PublishDiagnosticsParams{
 		URI:         uri,
 		Diagnostics: diags,
 	})
@@ -217,7 +348,8 @@ func makeDiagnostic(src []byte, start, end int, msg string) protocol.Diagnostic 
 }
 
 func completion(_ *glsp.Context, params *protocol.CompletionParams) (any, error) {
-	if loadedSchema == nil {
+	sch := currentSchema()
+	if sch == nil {
 		return []protocol.CompletionItem{}, nil
 	}
 	uri := params.TextDocument.URI
@@ -241,7 +373,7 @@ func completion(_ *glsp.Context, params *protocol.CompletionParams) (any, error)
 	}
 
 	ctx := sqlctx.Analyze(sql, off)
-	return contextItems(loadedSchema, ctx), nil
+	return contextItems(sch, ctx), nil
 }
 
 func contextItems(s *schema.Schema, ctx sqlctx.Context) []protocol.CompletionItem {
@@ -274,7 +406,8 @@ func contextItems(s *schema.Schema, ctx sqlctx.Context) []protocol.CompletionIte
 }
 
 func hover(_ *glsp.Context, params *protocol.HoverParams) (*protocol.Hover, error) {
-	if loadedSchema == nil {
+	sch := currentSchema()
+	if sch == nil {
 		return nil, nil
 	}
 	uri := params.TextDocument.URI
@@ -302,7 +435,7 @@ func hover(_ *glsp.Context, params *protocol.HoverParams) (*protocol.Hover, erro
 		return nil, nil
 	}
 	ctx := sqlctx.Analyze(sql, off)
-	md := hoverMarkdown(loadedSchema, id, ctx)
+	md := hoverMarkdown(sch, id, ctx)
 	if md == "" {
 		return nil, nil
 	}

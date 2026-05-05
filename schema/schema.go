@@ -6,6 +6,8 @@ import (
 
 	pg_query "github.com/pganalyze/pg_query_go/v6"
 	pgquery "github.com/wasilibs/go-pgquery"
+
+	"github.com/winebarrel/pgls/internal/posenc"
 )
 
 type Schema struct {
@@ -36,15 +38,26 @@ func (s *Schema) HasColumn(table, column string) bool {
 	return false
 }
 
+// Position is the source location of a Table or Column declaration.
+// Path is the absolute file path on disk; Line and Character are
+// 0-indexed LSP positions (Character in UTF-16 code units).
+type Position struct {
+	Path      string
+	Line      int
+	Character int
+}
+
 type Table struct {
-	Schema  string
-	Name    string
-	Columns []*Column
+	Schema   string
+	Name     string
+	Columns  []*Column
+	Position Position
 }
 
 type Column struct {
-	Name string
-	Type string
+	Name     string
+	Type     string
+	Position Position
 }
 
 func Parse(sql string) (*Schema, error) {
@@ -53,22 +66,24 @@ func Parse(sql string) (*Schema, error) {
 		return nil, fmt.Errorf("parse sql: %w", err)
 	}
 
+	src := []byte(sql)
 	s := &Schema{Tables: map[string]*Table{}}
 	for _, raw := range result.Stmts {
 		create := raw.Stmt.GetCreateStmt()
 		if create == nil {
 			continue
 		}
-		t := tableFromCreate(create)
+		t := tableFromCreate(create, src)
 		s.Tables[t.Name] = t
 	}
 	return s, nil
 }
 
-func tableFromCreate(c *pg_query.CreateStmt) *Table {
+func tableFromCreate(c *pg_query.CreateStmt, src []byte) *Table {
 	t := &Table{
-		Schema: c.Relation.Schemaname,
-		Name:   c.Relation.Relname,
+		Schema:   c.Relation.Schemaname,
+		Name:     c.Relation.Relname,
+		Position: positionAt(src, int(c.Relation.Location)),
 	}
 	for _, elt := range c.TableElts {
 		col := elt.GetColumnDef()
@@ -76,11 +91,23 @@ func tableFromCreate(c *pg_query.CreateStmt) *Table {
 			continue
 		}
 		t.Columns = append(t.Columns, &Column{
-			Name: col.Colname,
-			Type: typeName(col.TypeName),
+			Name:     col.Colname,
+			Type:     typeName(col.TypeName),
+			Position: positionAt(src, int(col.Location)),
 		})
 	}
 	return t
+}
+
+// positionAt converts a byte offset within src into a Position. Negative
+// offsets — which pg_query uses for nodes whose source location is
+// unknown — collapse to (0, 0).
+func positionAt(src []byte, offset int) Position {
+	if offset < 0 {
+		return Position{}
+	}
+	line, char := posenc.ByteToLSP(src, offset)
+	return Position{Line: line, Character: char}
 }
 
 func typeName(t *pg_query.TypeName) string {

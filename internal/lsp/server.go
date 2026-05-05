@@ -68,6 +68,7 @@ func Run(cliSchemaDir string) error {
 		TextDocumentDidClose:   didClose,
 		TextDocumentCompletion: completion,
 		TextDocumentHover:      hover,
+		TextDocumentDefinition: definition,
 	}
 	srv := server.NewServer(&handler, name, false)
 	return srv.RunStdio()
@@ -518,6 +519,91 @@ func scopedColumnItems(s *schema.Schema, tableNames []string, aliases map[string
 		}
 	}
 	return items
+}
+
+func definition(_ *glsp.Context, params *protocol.DefinitionParams) (any, error) {
+	sch := currentSchema()
+	if sch == nil {
+		return nil, nil
+	}
+	uri := params.TextDocument.URI
+	docsMu.Lock()
+	text := docs[uri]
+	docsMu.Unlock()
+
+	var sql string
+	var off int
+	line, char := int(params.Position.Line), int(params.Position.Character)
+
+	if strings.HasSuffix(uri, ".go") {
+		s, o, ok := goast.FindSQL([]byte(text), line, char)
+		if !ok {
+			return nil, nil
+		}
+		sql, off = s, o
+	} else {
+		sql = text
+		off = posenc.LSPToByte([]byte(text), line, char)
+	}
+
+	id, ok := sqlctx.IdentifierAt(sql, off)
+	if !ok {
+		return nil, nil
+	}
+	ctx := sqlctx.Analyze(sql, off)
+	pos := definitionPosition(sch, id, ctx)
+	if pos == nil || pos.Path == "" {
+		return nil, nil
+	}
+	target := protocol.Position{Line: uint32(pos.Line), Character: uint32(pos.Character)}
+	return protocol.Location{
+		URI: "file://" + pos.Path,
+		Range: protocol.Range{
+			Start: target,
+			End:   target,
+		},
+	}, nil
+}
+
+func definitionPosition(s *schema.Schema, id sqlctx.Identifier, ctx sqlctx.Context) *schema.Position {
+	if id.Qualifier != "" {
+		realName, ok := ctx.Aliases[id.Qualifier]
+		if !ok {
+			realName = id.Qualifier
+		}
+		if t, ok := s.Tables[realName]; ok {
+			if c := findColumn(t, id.Name); c != nil {
+				return &c.Position
+			}
+		}
+		return nil
+	}
+
+	if t, ok := s.Tables[id.Name]; ok {
+		return &t.Position
+	}
+	if real, ok := ctx.Aliases[id.Name]; ok {
+		if t, ok := s.Tables[real]; ok {
+			return &t.Position
+		}
+	}
+
+	candidates := ctx.FromTables
+	if len(candidates) == 0 {
+		for n := range s.Tables {
+			candidates = append(candidates, n)
+		}
+	}
+	for _, name := range candidates {
+		t, ok := s.Tables[name]
+		if !ok {
+			continue
+		}
+		if c := findColumn(t, id.Name); c != nil {
+			return &c.Position
+		}
+	}
+	return nil
 }
 
 func hover(_ *glsp.Context, params *protocol.HoverParams) (*protocol.Hover, error) {

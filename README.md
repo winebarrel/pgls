@@ -83,6 +83,10 @@ client.start();
   - after `FROM`/`JOIN`/`INTO`/`UPDATE`: tables only
   - after `SELECT`/`WHERE`/`SET`/`ON`: columns from FROM-tables
   - `alias.` resolves the alias and offers that table's columns only
+- **Goto-definition** — jump from a table reference to its
+  `CREATE TABLE` line, or from a qualified column (`u.email`) to the
+  column's row in the DDL. Aliases are resolved to the underlying
+  table.
 - **Hover** — markdown summary of the identifier under the cursor:
   table layout for tables, `table.column \`type\`` for columns,
   alias resolution for `u.email`-style references.

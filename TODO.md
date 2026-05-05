@@ -33,8 +33,6 @@ Loosely ordered by impact. Items are independent unless noted.
 
 ## Medium — additional LSP features
 
-- [ ] **Goto-definition** — jump from a table reference to its
-  `CREATE TABLE` line in the schema directory.
 - [ ] **Document symbols** — outline of `CREATE TABLE` statements in
   `.sql` files for the editor's outline pane.
 - [ ] **Snippet-style completion** — emit `SELECT $1 FROM $2` instead

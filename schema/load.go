@@ -26,6 +26,10 @@ func Load(dir string) (*Schema, error) {
 			return fmt.Errorf("%s: %w", path, err)
 		}
 		for name, t := range s.Tables {
+			t.Position.Path = path
+			for _, c := range t.Columns {
+				c.Position.Path = path
+			}
 			merged.Tables[name] = t
 		}
 		return nil

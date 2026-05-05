@@ -98,8 +98,15 @@ client.start();
 
 ## Limitations
 
-- **CTEs / subqueries** are not yet scoped — `WITH cte AS (...)
-  SELECT * FROM cte` reports `cte` as an unknown table.
+- **CTE / subquery columns are not validated** — names introduced by
+  `WITH` or `(SELECT ...) alias` are recognized as visible tables (so
+  `FROM cte` and `cte.foo` don't false-flag), but `cte.foo` is silently
+  accepted because pgls does not analyze the CTE body to extract its
+  output column list. Inner unknown-table typos (`WITH a AS (SELECT *
+  FROM nope)`) are still flagged.
+- **Scope leakage between subqueries** — aliases defined inside a
+  subquery are visible from the outer query. A v1 trade-off: yields
+  occasional false negatives, never false positives.
 - **`ALTER TABLE` is not parsed** — only `CREATE TABLE` contributes
   to the schema.
 - **Unqualified column references are not validated** — too many

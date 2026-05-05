@@ -21,8 +21,33 @@ const (
 type Context struct {
 	State      State
 	Qualifier  string            // for StateQualifiedColumn (alias or table name)
-	FromTables []string          // tables visible in scope (deduped, real names)
-	Aliases    map[string]string // alias -> real table name
+	FromTables []string          // real tables in scope (deduped)
+	Aliases    map[string]string // alias -> table name (real or virtual)
+	Virtual    map[string]bool   // names introduced by WITH or "(...) alias"
+}
+
+// tablesInfo accumulates table-and-alias information while walking SQL.
+type tablesInfo struct {
+	aliases    map[string]string
+	realTables []string
+	realSeen   map[string]bool
+	virtual    map[string]bool
+}
+
+func newTablesInfo() *tablesInfo {
+	return &tablesInfo{
+		aliases:  map[string]string{},
+		realSeen: map[string]bool{},
+		virtual:  map[string]bool{},
+	}
+}
+
+func (i *tablesInfo) addReal(name string) {
+	if i.realSeen[name] {
+		return
+	}
+	i.realSeen[name] = true
+	i.realTables = append(i.realTables, name)
 }
 
 // Identifier describes a single identifier under the cursor for hover/lookup.
@@ -146,14 +171,15 @@ func Analyze(sql string, cursor int) Context {
 		cursor = len(sql)
 	}
 	all := tokenize(sql)
-	aliases := extractTables(all)
+	info := extractTables(all)
 	prefix := tokensBefore(all, cursor)
 	state, qualifier := determineState(prefix)
 	return Context{
 		State:      state,
 		Qualifier:  qualifier,
-		FromTables: uniqueValues(aliases),
-		Aliases:    aliases,
+		FromTables: info.realTables,
+		Aliases:    info.aliases,
+		Virtual:    info.virtual,
 	}
 }
 
@@ -166,65 +192,155 @@ func tokensBefore(tokens []token, cursor int) []token {
 	return tokens
 }
 
-func uniqueValues(m map[string]string) []string {
-	seen := map[string]bool{}
-	var out []string
-	for _, v := range m {
-		if !seen[v] {
-			seen[v] = true
-			out = append(out, v)
-		}
-	}
-	return out
+func extractTables(tokens []token) *tablesInfo {
+	info := newTablesInfo()
+	extractTablesRange(tokens, 0, len(tokens), info)
+	return info
 }
 
-func extractTables(tokens []token) map[string]string {
-	aliases := map[string]string{}
-	i := 0
-	for i < len(tokens) {
+func extractTablesRange(tokens []token, start, end int, info *tablesInfo) {
+	i := start
+	for i < end {
 		upper := strings.ToUpper(tokens[i].text)
-		if upper == "FROM" || upper == "JOIN" || upper == "INTO" || upper == "UPDATE" {
-			i = readTableList(tokens, i+1, aliases)
+		switch upper {
+		case "FROM", "JOIN", "INTO", "UPDATE":
+			i = readTableList(tokens, i+1, end, info)
+			continue
+		case "WITH":
+			j := i + 1
+			if j < end && strings.ToUpper(tokens[j].text) == "RECURSIVE" {
+				j++
+			}
+			i = readCTEDefinitions(tokens, j, end, info)
 			continue
 		}
 		i++
 	}
-	return aliases
 }
 
-func readTableList(tokens []token, i int, aliases map[string]string) int {
-	for i < len(tokens) {
+func readTableList(tokens []token, start, end int, info *tablesInfo) int {
+	i := start
+	for i < end {
 		t := tokens[i]
+
+		// Subquery in table position: ( ... ) [AS] alias
+		if t.text == "(" {
+			close := skipBalancedParens(tokens, i, end)
+			// Walk the subquery body so its FROM/JOIN/CTE aliases are
+			// collected too. Scope leakage (inner aliases visible to
+			// outer query) is accepted as a v1 limitation — yields
+			// false negatives, never false positives.
+			extractTablesRange(tokens, i+1, close-1, info)
+
+			j := close
+			if j < end && strings.ToUpper(tokens[j].text) == "AS" {
+				j++
+			}
+			if j < end && isIdent(tokens[j].text) && !stopWords[strings.ToUpper(tokens[j].text)] {
+				name := tokens[j].text
+				info.aliases[name] = name
+				info.virtual[name] = true
+				j++
+			}
+			if j < end && tokens[j].text == "," {
+				i = j + 1
+				continue
+			}
+			return j
+		}
+
 		if !isIdent(t.text) || stopWords[strings.ToUpper(t.text)] {
 			return i
 		}
 		tableName := t.text
 		i++
 		// schema.table
-		if i+1 < len(tokens) && tokens[i].text == "." && isIdent(tokens[i+1].text) && !stopWords[strings.ToUpper(tokens[i+1].text)] {
+		if i+1 < end && tokens[i].text == "." && isIdent(tokens[i+1].text) && !stopWords[strings.ToUpper(tokens[i+1].text)] {
 			tableName = tokens[i+1].text
 			i += 2
 		}
 		alias := tableName
-		// optional AS
-		if i < len(tokens) && strings.ToUpper(tokens[i].text) == "AS" {
+		if i < end && strings.ToUpper(tokens[i].text) == "AS" {
 			i++
 		}
-		// optional alias identifier (must not be a stop word)
-		if i < len(tokens) && isIdent(tokens[i].text) && !stopWords[strings.ToUpper(tokens[i].text)] {
+		if i < end && isIdent(tokens[i].text) && !stopWords[strings.ToUpper(tokens[i].text)] {
 			alias = tokens[i].text
 			i++
 		}
-		aliases[alias] = tableName
+		info.addReal(tableName)
+		// Register only an *explicit* alias. The bare table is looked up
+		// through schema.HasTable; registering it here would shadow
+		// unknown-table diagnostics for typos.
 		if alias != tableName {
-			aliases[tableName] = tableName
+			info.aliases[alias] = tableName
 		}
-		// chain comma-separated tables
-		if i < len(tokens) && tokens[i].text == "," {
+		if i < end && tokens[i].text == "," {
 			i++
 			continue
 		}
 		return i
+	}
+	return i
+}
+
+// readCTEDefinitions parses the CTE list of a WITH clause: a comma-separated
+// sequence of "name [(col, ...)] AS [NOT] [MATERIALIZED] (body)" entries.
+// Each CTE name is registered as a virtual table so it resolves like a
+// real table in FROM/JOIN/qualifier checks; column-level validation
+// against the CTE body is not attempted.
+func readCTEDefinitions(tokens []token, start, end int, info *tablesInfo) int {
+	i := start
+	for i < end {
+		if !isIdent(tokens[i].text) || stopWords[strings.ToUpper(tokens[i].text)] {
+			return i
+		}
+		name := tokens[i].text
+		i++
+		// optional column list: (col1, col2, ...)
+		if i < end && tokens[i].text == "(" {
+			i = skipBalancedParens(tokens, i, end)
+		}
+		if i < end && strings.ToUpper(tokens[i].text) == "AS" {
+			i++
+		}
+		// optional [NOT] MATERIALIZED
+		if i < end && strings.ToUpper(tokens[i].text) == "NOT" {
+			i++
+		}
+		if i < end && strings.ToUpper(tokens[i].text) == "MATERIALIZED" {
+			i++
+		}
+		// CTE body
+		if i < end && tokens[i].text == "(" {
+			close := skipBalancedParens(tokens, i, end)
+			extractTablesRange(tokens, i+1, close-1, info)
+			i = close
+		}
+		info.aliases[name] = name
+		info.virtual[name] = true
+		if i < end && tokens[i].text == "," {
+			i++
+			continue
+		}
+		return i
+	}
+	return i
+}
+
+func skipBalancedParens(tokens []token, i, end int) int {
+	if i >= end || tokens[i].text != "(" {
+		return i
+	}
+	depth := 1
+	i++
+	for i < end && depth > 0 {
+		switch tokens[i].text {
+		case "(":
+			depth++
+		case ")":
+			depth--
+		}
+		i++
 	}
 	return i
 }

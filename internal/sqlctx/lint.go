@@ -31,7 +31,8 @@ type Issue struct {
 // CTE column names, function calls, or values from outer scopes.
 func Lint(sql string, s Schema) []Issue {
 	tokens := tokenize(sql)
-	aliases := extractTables(tokens)
+	info := extractTables(tokens)
+	aliases := info.aliases
 
 	var issues []Issue
 	for i, t := range tokens {
@@ -93,8 +94,10 @@ func Lint(sql string, s Schema) []Issue {
 		}
 
 		// Bare table reference: identifier directly after FROM/JOIN/INTO/UPDATE.
+		// Virtual tables (CTE / subquery aliases) are accepted silently;
+		// only names that are neither real nor virtual get flagged.
 		if prev != nil && isFromKeyword(prev.text) {
-			if !s.HasTable(t.text) {
+			if !s.HasTable(t.text) && !info.virtual[t.text] {
 				issues = append(issues, Issue{
 					Start:   t.start,
 					End:     t.end,

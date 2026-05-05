@@ -113,6 +113,44 @@ func TestLint_CastOperator(t *testing.T) {
 	}
 }
 
+func TestLint_CTE(t *testing.T) {
+	s := makeSchema()
+	cases := []string{
+		`WITH active AS (SELECT * FROM users WHERE 1=1) SELECT * FROM active`,
+		`WITH RECURSIVE rec AS (SELECT 1) SELECT * FROM rec`,
+		`WITH a AS (SELECT * FROM users), b AS (SELECT * FROM orders) SELECT * FROM a JOIN b ON 1=1`,
+		`WITH active AS (SELECT id FROM users) SELECT a.id FROM active a WHERE a.id > 0`,
+	}
+	for _, sql := range cases {
+		if got := Lint(sql, s); len(got) != 0 {
+			t.Errorf("%q: unexpected %v", sql, issueMessages(got))
+		}
+	}
+}
+
+func TestLint_Subquery(t *testing.T) {
+	s := makeSchema()
+	cases := []string{
+		`SELECT * FROM (SELECT id FROM users) sub`,
+		`SELECT sub.id FROM (SELECT id FROM users) sub`,
+		`SELECT * FROM users JOIN (SELECT id FROM orders) o ON users.id = o.id`,
+	}
+	for _, sql := range cases {
+		if got := Lint(sql, s); len(got) != 0 {
+			t.Errorf("%q: unexpected %v", sql, issueMessages(got))
+		}
+	}
+}
+
+func TestLint_CTEStillFlagsRealTypos(t *testing.T) {
+	s := makeSchema()
+	// Inner subquery references an unknown table — should still flag.
+	got := Lint(`WITH a AS (SELECT * FROM nope) SELECT * FROM a`, s)
+	if len(got) != 1 || !strings.Contains(got[0].Message, "nope") {
+		t.Errorf("got %v", issueMessages(got))
+	}
+}
+
 func TestLint_FunctionNotFlagged(t *testing.T) {
 	s := makeSchema()
 	if got := Lint("SELECT now() FROM users", s); len(got) != 0 {

@@ -1,11 +1,12 @@
 package goast
 
 import (
-	"bytes"
 	"go/ast"
 	"go/parser"
 	"go/token"
 	"strings"
+
+	"github.com/winebarrel/pgls/internal/posenc"
 )
 
 var sqlPrefixes = []string{
@@ -16,13 +17,10 @@ var sqlPrefixes = []string{
 // FindSQL returns the SQL text and the byte offset of the cursor within
 // it when the cursor sits inside a string literal that looks like SQL.
 //
-// line and character are 0-indexed (LSP convention). character is treated
-// as a byte offset within the line; UTF-16 conversion is a TODO.
+// line and character are 0-indexed LSP positions; character is in
+// UTF-16 code units (the LSP default).
 func FindSQL(src []byte, line, character int) (sql string, offset int, ok bool) {
-	cursor, ok := byteOffset(src, line, character)
-	if !ok {
-		return "", 0, false
-	}
+	cursor := posenc.LSPToByte(src, line, character)
 
 	fset := token.NewFileSet()
 	file, _ := parser.ParseFile(fset, "", src, parser.AllErrors)
@@ -89,18 +87,3 @@ func looksLikeSQL(s string) bool {
 	return false
 }
 
-func byteOffset(src []byte, line, character int) (int, bool) {
-	pos := 0
-	for l := 0; l < line; l++ {
-		nl := bytes.IndexByte(src[pos:], '\n')
-		if nl < 0 {
-			return 0, false
-		}
-		pos += nl + 1
-	}
-	pos += character
-	if pos > len(src) {
-		return 0, false
-	}
-	return pos, true
-}

@@ -79,6 +79,21 @@ func main() {
 	}
 }
 
+func TestFindSQL_MultibyteOnSameLine(t *testing.T) {
+	// The string contains 🎉 (surrogate pair: 4 UTF-8 bytes / 2 UTF-16 units)
+	// before the cursor on the same line, verifying that LSP UTF-16
+	// positions are translated to byte offsets correctly.
+	src := []byte("package main\n\nfunc main() {\n\tq := `SELECT 🎉 FROM users`\n}\n")
+	// Line 3, UTF-16 char 15 = right after 🎉 (\t=1, q :=⎵=4 [actually 5: q + space + : + = + space], `SELECT⎵=8, 🎉=2 → 1+5+8+1=15)
+	sql, off, ok := FindSQL(src, 3, 15)
+	if !ok {
+		t.Fatal("want ok=true")
+	}
+	if got := sql[:off]; got != "SELECT 🎉" {
+		t.Errorf("sql[:off]=%q, want %q", got, "SELECT 🎉")
+	}
+}
+
 func TestFindSQL_MultilineBacktick(t *testing.T) {
 	src, line, char := cursorAt(t, "package main\n\nfunc main() {\n\tq := `SELECT *\nFROM users\nWHERE id = <|>1`\n\t_ = q\n}\n")
 	sql, off, ok := FindSQL(src, line, char)

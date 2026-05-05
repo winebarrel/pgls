@@ -1,7 +1,6 @@
 package lsp
 
 import (
-	"bytes"
 	"fmt"
 	"strings"
 	"sync"
@@ -10,6 +9,7 @@ import (
 	protocol "github.com/tliron/glsp/protocol_3_16"
 	"github.com/tliron/glsp/server"
 	"github.com/winebarrel/pgls/internal/goast"
+	"github.com/winebarrel/pgls/internal/posenc"
 	"github.com/winebarrel/pgls/internal/sqlctx"
 	"github.com/winebarrel/pgls/schema"
 )
@@ -112,27 +112,11 @@ func completion(_ *glsp.Context, params *protocol.CompletionParams) (any, error)
 		sql, off = s, o
 	} else {
 		sql = text
-		off = byteOffset([]byte(text), line, char)
+		off = posenc.LSPToByte([]byte(text), line, char)
 	}
 
 	ctx := sqlctx.Analyze(sql, off)
 	return contextItems(loadedSchema, ctx), nil
-}
-
-func byteOffset(src []byte, line, character int) int {
-	pos := 0
-	for l := 0; l < line; l++ {
-		nl := bytes.IndexByte(src[pos:], '\n')
-		if nl < 0 {
-			return len(src)
-		}
-		pos += nl + 1
-	}
-	pos += character
-	if pos > len(src) {
-		return len(src)
-	}
-	return pos
 }
 
 func contextItems(s *schema.Schema, ctx sqlctx.Context) []protocol.CompletionItem {

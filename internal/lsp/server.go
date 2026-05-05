@@ -2,11 +2,13 @@ package lsp
 
 import (
 	"fmt"
+	"strings"
 	"sync"
 
 	"github.com/tliron/glsp"
 	protocol "github.com/tliron/glsp/protocol_3_16"
 	"github.com/tliron/glsp/server"
+	"github.com/winebarrel/pgls/internal/goast"
 	"github.com/winebarrel/pgls/schema"
 )
 
@@ -87,14 +89,27 @@ func didClose(_ *glsp.Context, params *protocol.DidCloseTextDocumentParams) erro
 	return nil
 }
 
-func completion(_ *glsp.Context, _ *protocol.CompletionParams) (any, error) {
+func completion(_ *glsp.Context, params *protocol.CompletionParams) (any, error) {
 	if loadedSchema == nil {
 		return []protocol.CompletionItem{}, nil
 	}
+	uri := params.TextDocument.URI
+	if strings.HasSuffix(uri, ".go") {
+		docsMu.Lock()
+		text := docs[uri]
+		docsMu.Unlock()
+		if _, _, ok := goast.FindSQL([]byte(text), int(params.Position.Line), int(params.Position.Character)); !ok {
+			return []protocol.CompletionItem{}, nil
+		}
+	}
+	return schemaItems(loadedSchema), nil
+}
+
+func schemaItems(s *schema.Schema) []protocol.CompletionItem {
 	tableKind := protocol.CompletionItemKindClass
 	fieldKind := protocol.CompletionItemKindField
 	var items []protocol.CompletionItem
-	for _, t := range loadedSchema.Tables {
+	for _, t := range s.Tables {
 		tableDetail := "table"
 		items = append(items, protocol.CompletionItem{
 			Label:  t.Name,
@@ -110,5 +125,5 @@ func completion(_ *glsp.Context, _ *protocol.CompletionParams) (any, error) {
 			})
 		}
 	}
-	return items, nil
+	return items
 }

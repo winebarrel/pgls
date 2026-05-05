@@ -80,6 +80,13 @@ func initialize(ctx *glsp.Context, params *protocol.InitializeParams) (any, erro
 	caps.CompletionProvider = &protocol.CompletionOptions{
 		TriggerCharacters: []string{".", " "},
 	}
+	// glsp defaults to Incremental sync, but our didChange handler only
+	// applies whole-document updates. Advertise Full so VSCode sends the
+	// full text on every change.
+	caps.TextDocumentSync = protocol.TextDocumentSyncOptions{
+		OpenClose: boolPtr(true),
+		Change:    syncKindPtr(protocol.TextDocumentSyncKindFull),
+	}
 	v := version
 	return protocol.InitializeResult{
 		Capabilities: caps,
@@ -130,6 +137,9 @@ func workspaceRoot(params *protocol.InitializeParams) string {
 	}
 	return ""
 }
+
+func boolPtr(b bool) *bool                                                    { return &b }
+func syncKindPtr(k protocol.TextDocumentSyncKind) *protocol.TextDocumentSyncKind { return &k }
 
 func uriToPath(uri string) string {
 	u, err := url.Parse(uri)

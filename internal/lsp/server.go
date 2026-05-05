@@ -80,12 +80,9 @@ func initialize(ctx *glsp.Context, params *protocol.InitializeParams) (any, erro
 	caps.CompletionProvider = &protocol.CompletionOptions{
 		TriggerCharacters: []string{".", " "},
 	}
-	// glsp defaults to Incremental sync, but our didChange handler only
-	// applies whole-document updates. Advertise Full so VSCode sends the
-	// full text on every change.
 	caps.TextDocumentSync = protocol.TextDocumentSyncOptions{
 		OpenClose: boolPtr(true),
-		Change:    syncKindPtr(protocol.TextDocumentSyncKindFull),
+		Change:    syncKindPtr(protocol.TextDocumentSyncKindIncremental),
 	}
 	v := version
 	return protocol.InitializeResult{
@@ -277,15 +274,32 @@ func didChange(_ *glsp.Context, params *protocol.DidChangeTextDocumentParams) er
 		case protocol.TextDocumentContentChangeEventWhole:
 			text = c.Text
 		case protocol.TextDocumentContentChangeEvent:
-			if c.Range == nil {
-				text = c.Text
-			}
+			text = applyContentChange(text, c)
 		}
 	}
 	docs[params.TextDocument.URI] = text
 	docsMu.Unlock()
 	publishDiagnostics(params.TextDocument.URI)
 	return nil
+}
+
+// applyContentChange applies a single LSP content change to text.
+// A nil Range means the change replaces the entire document.
+// Per the LSP spec, when multiple changes arrive in one didChange,
+// each change's positions refer to the document state *after* the
+// preceding changes in the batch have been applied — so callers
+// fold this function over the slice in order.
+func applyContentChange(text string, c protocol.TextDocumentContentChangeEvent) string {
+	if c.Range == nil {
+		return c.Text
+	}
+	src := []byte(text)
+	start := posenc.LSPToByte(src, int(c.Range.Start.Line), int(c.Range.Start.Character))
+	end := posenc.LSPToByte(src, int(c.Range.End.Line), int(c.Range.End.Character))
+	if end < start {
+		end = start
+	}
+	return text[:start] + c.Text + text[end:]
 }
 
 func didClose(_ *glsp.Context, params *protocol.DidCloseTextDocumentParams) error {

@@ -63,13 +63,6 @@ Loosely ordered by impact. Items are independent unless noted.
 - [ ] **`schema/` edge cases** — array types (`bigint[]`), ENUMs,
   generated columns, `CHECK` constraints, schema-qualified table
   names from DDL.
-- [ ] **Incremental text-document sync** — currently the server
-  advertises Full sync (the entire document is resent on every
-  keystroke). Implementing incremental range application would
-  reduce JSON-RPC traffic and parsing on large `.go` files. The
-  earlier mismatch between an Incremental advertisement and a
-  Full-only handler caused stale-document bugs; whichever mode is
-  chosen, the advertisement and the handler must agree.
 
 ## Low — PostgreSQL surface
 

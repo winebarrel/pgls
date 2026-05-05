@@ -391,18 +391,80 @@ func contextItems(s *schema.Schema, ctx sqlctx.Context) []protocol.CompletionIte
 		return nil
 	case sqlctx.StateColumn:
 		if len(ctx.FromTables) > 0 {
-			var items []protocol.CompletionItem
-			for _, n := range ctx.FromTables {
-				if t, ok := s.Tables[n]; ok {
-					items = append(items, columnItems(t)...)
-				}
-			}
-			return items
+			return scopedColumnItems(s, ctx.FromTables, ctx.Aliases)
 		}
-		return allColumnItems(s)
+		return scopedColumnItems(s, allTableNames(s), nil)
 	default:
-		return allItems(s)
+		items := tableItems(s)
+		items = append(items, scopedColumnItems(s, allTableNames(s), nil)...)
+		return items
 	}
+}
+
+func allTableNames(s *schema.Schema) []string {
+	names := make([]string, 0, len(s.Tables))
+	for n := range s.Tables {
+		names = append(names, n)
+	}
+	return names
+}
+
+// scopedColumnItems builds column completions for a set of visible tables.
+// When the same column name appears in multiple tables, the duplicate
+// entries are qualified ("u.id" / "orders.id") so the editor popup can
+// distinguish them. FilterText keeps the bare column name as the typing
+// match, and InsertText writes the qualified form. Aliases are preferred
+// over real table names when an explicit alias is in scope.
+func scopedColumnItems(s *schema.Schema, tableNames []string, aliases map[string]string) []protocol.CompletionItem {
+	realToAlias := map[string]string{}
+	for alias, real := range aliases {
+		if alias != real {
+			realToAlias[real] = alias
+		}
+	}
+
+	counts := map[string]int{}
+	for _, n := range tableNames {
+		if t, ok := s.Tables[n]; ok {
+			for _, c := range t.Columns {
+				counts[c.Name]++
+			}
+		}
+	}
+
+	fieldKind := protocol.CompletionItemKindField
+	var items []protocol.CompletionItem
+	for _, n := range tableNames {
+		t, ok := s.Tables[n]
+		if !ok {
+			continue
+		}
+		prefix := t.Name
+		if a, ok := realToAlias[t.Name]; ok {
+			prefix = a
+		}
+		for _, c := range t.Columns {
+			detail := fmt.Sprintf("%s.%s %s", t.Name, c.Name, c.Type)
+			label := c.Name
+			var insertText, filterText *string
+			if counts[c.Name] > 1 {
+				qualified := prefix + "." + c.Name
+				label = qualified
+				ins := qualified
+				flt := c.Name
+				insertText = &ins
+				filterText = &flt
+			}
+			items = append(items, protocol.CompletionItem{
+				Label:      label,
+				Kind:       &fieldKind,
+				Detail:     &detail,
+				InsertText: insertText,
+				FilterText: filterText,
+			})
+		}
+	}
+	return items
 }
 
 func hover(_ *glsp.Context, params *protocol.HoverParams) (*protocol.Hover, error) {
@@ -535,16 +597,3 @@ func columnItems(t *schema.Table) []protocol.CompletionItem {
 	return items
 }
 
-func allColumnItems(s *schema.Schema) []protocol.CompletionItem {
-	var items []protocol.CompletionItem
-	for _, t := range s.Tables {
-		items = append(items, columnItems(t)...)
-	}
-	return items
-}
-
-func allItems(s *schema.Schema) []protocol.CompletionItem {
-	items := tableItems(s)
-	items = append(items, allColumnItems(s)...)
-	return items
-}

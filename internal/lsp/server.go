@@ -1,7 +1,11 @@
 package lsp
 
 import (
+	"encoding/json"
 	"fmt"
+	"log"
+	"net/url"
+	"path/filepath"
 	"strings"
 	"sync"
 
@@ -28,8 +32,8 @@ var (
 	loadedSchema *schema.Schema
 )
 
-func Run(s *schema.Schema) error {
-	loadedSchema = s
+func Run(initialSchema *schema.Schema) error {
+	loadedSchema = initialSchema
 	handler = protocol.Handler{
 		Initialize:             initialize,
 		Initialized:            func(*glsp.Context, *protocol.InitializedParams) error { return nil },
@@ -44,7 +48,20 @@ func Run(s *schema.Schema) error {
 	return srv.RunStdio()
 }
 
-func initialize(_ *glsp.Context, _ *protocol.InitializeParams) (any, error) {
+type initOptions struct {
+	SchemaDir string `json:"schemaDir"`
+}
+
+func initialize(_ *glsp.Context, params *protocol.InitializeParams) (any, error) {
+	if dir := schemaDirFromOptions(params); dir != "" {
+		if s, err := schema.Load(dir); err != nil {
+			log.Printf("schema load %q: %v", dir, err)
+		} else {
+			loadedSchema = s
+			log.Printf("loaded schema from %s (%d tables)", dir, len(s.Tables))
+		}
+	}
+
 	caps := handler.CreateServerCapabilities()
 	caps.CompletionProvider = &protocol.CompletionOptions{
 		TriggerCharacters: []string{".", " "},
@@ -57,6 +74,55 @@ func initialize(_ *glsp.Context, _ *protocol.InitializeParams) (any, error) {
 			Version: &v,
 		},
 	}, nil
+}
+
+func schemaDirFromOptions(params *protocol.InitializeParams) string {
+	if params.InitializationOptions == nil {
+		return ""
+	}
+	b, err := json.Marshal(params.InitializationOptions)
+	if err != nil {
+		return ""
+	}
+	var opts initOptions
+	if err := json.Unmarshal(b, &opts); err != nil {
+		return ""
+	}
+	if opts.SchemaDir == "" {
+		return ""
+	}
+	if filepath.IsAbs(opts.SchemaDir) {
+		return opts.SchemaDir
+	}
+	if root := workspaceRoot(params); root != "" {
+		return filepath.Join(root, opts.SchemaDir)
+	}
+	return opts.SchemaDir
+}
+
+func workspaceRoot(params *protocol.InitializeParams) string {
+	if len(params.WorkspaceFolders) > 0 {
+		if p := uriToPath(params.WorkspaceFolders[0].URI); p != "" {
+			return p
+		}
+	}
+	if params.RootURI != nil {
+		if p := uriToPath(*params.RootURI); p != "" {
+			return p
+		}
+	}
+	if params.RootPath != nil {
+		return *params.RootPath
+	}
+	return ""
+}
+
+func uriToPath(uri string) string {
+	u, err := url.Parse(uri)
+	if err != nil || u.Scheme != "file" {
+		return ""
+	}
+	return u.Path
 }
 
 func didOpen(_ *glsp.Context, params *protocol.DidOpenTextDocumentParams) error {

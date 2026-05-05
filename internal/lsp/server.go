@@ -1,11 +1,13 @@
 package lsp
 
 import (
+	"fmt"
 	"sync"
 
 	"github.com/tliron/glsp"
 	protocol "github.com/tliron/glsp/protocol_3_16"
 	"github.com/tliron/glsp/server"
+	"github.com/winebarrel/pgls/schema"
 )
 
 const (
@@ -18,9 +20,12 @@ var (
 
 	docsMu sync.Mutex
 	docs   = map[string]string{}
+
+	loadedSchema *schema.Schema
 )
 
-func Run() error {
+func Run(s *schema.Schema) error {
+	loadedSchema = s
 	handler = protocol.Handler{
 		Initialize:             initialize,
 		Initialized:            func(*glsp.Context, *protocol.InitializedParams) error { return nil },
@@ -31,8 +36,8 @@ func Run() error {
 		TextDocumentDidClose:   didClose,
 		TextDocumentCompletion: completion,
 	}
-	s := server.NewServer(&handler, name, false)
-	return s.RunStdio()
+	srv := server.NewServer(&handler, name, false)
+	return srv.RunStdio()
 }
 
 func initialize(_ *glsp.Context, _ *protocol.InitializeParams) (any, error) {
@@ -83,9 +88,27 @@ func didClose(_ *glsp.Context, params *protocol.DidCloseTextDocumentParams) erro
 }
 
 func completion(_ *glsp.Context, _ *protocol.CompletionParams) (any, error) {
-	detail := "pgls placeholder"
-	kind := protocol.CompletionItemKindText
-	return []protocol.CompletionItem{
-		{Label: "pgls_hello", Kind: &kind, Detail: &detail},
-	}, nil
+	if loadedSchema == nil {
+		return []protocol.CompletionItem{}, nil
+	}
+	tableKind := protocol.CompletionItemKindClass
+	fieldKind := protocol.CompletionItemKindField
+	var items []protocol.CompletionItem
+	for _, t := range loadedSchema.Tables {
+		tableDetail := "table"
+		items = append(items, protocol.CompletionItem{
+			Label:  t.Name,
+			Kind:   &tableKind,
+			Detail: &tableDetail,
+		})
+		for _, c := range t.Columns {
+			colDetail := fmt.Sprintf("%s.%s %s", t.Name, c.Name, c.Type)
+			items = append(items, protocol.CompletionItem{
+				Label:  c.Name,
+				Kind:   &fieldKind,
+				Detail: &colDetail,
+			})
+		}
+	}
+	return items, nil
 }

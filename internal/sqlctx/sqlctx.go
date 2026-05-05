@@ -5,6 +5,8 @@ package sqlctx
 import (
 	"regexp"
 	"strings"
+
+	pgquery "github.com/wasilibs/go-pgquery"
 )
 
 type State int
@@ -57,9 +59,38 @@ type token struct {
 	end   int
 }
 
+// tokenize splits sql into tokens. It uses libpg_query's lexer (which
+// handles quoted identifiers, casts, dollar-quoted strings, and the
+// full PostgreSQL keyword set), and falls back to a regex tokenizer
+// when Scan fails on input the lexer can't recover from.
+func tokenize(s string) []token {
+	result, err := pgquery.Scan(s)
+	if err != nil || result == nil {
+		return tokenizeRegex(s)
+	}
+	out := make([]token, 0, len(result.Tokens))
+	for _, t := range result.Tokens {
+		if int(t.End) > len(s) || t.Start < 0 || t.Start > t.End {
+			continue
+		}
+		text := s[t.Start:t.End]
+		if strings.HasPrefix(text, "--") || strings.HasPrefix(text, "/*") {
+			continue
+		}
+		// Strip surrounding quotes from quoted identifiers ("foo" → foo)
+		// so downstream lookups match the unquoted schema names. The
+		// original byte range is preserved for diagnostic ranges.
+		if len(text) >= 2 && text[0] == '"' && text[len(text)-1] == '"' {
+			text = text[1 : len(text)-1]
+		}
+		out = append(out, token{text: text, start: int(t.Start), end: int(t.End)})
+	}
+	return out
+}
+
 var tokenRe = regexp.MustCompile(`[A-Za-z_][A-Za-z0-9_]*|[0-9]+(?:\.[0-9]+)?|'[^']*'|"[^"]*"|--[^\n]*|[.,;()=<>!*+\-/]`)
 
-func tokenize(s string) []token {
+func tokenizeRegex(s string) []token {
 	matches := tokenRe.FindAllStringIndex(s, -1)
 	out := make([]token, 0, len(matches))
 	for _, m := range matches {

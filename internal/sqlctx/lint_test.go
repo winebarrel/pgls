@@ -92,6 +92,27 @@ func TestLint_JoinUnknown(t *testing.T) {
 	}
 }
 
+func TestLint_QuotedIdent(t *testing.T) {
+	s := makeSchema()
+	// Quoted identifier matches the unquoted schema name → no issue.
+	if got := Lint(`SELECT * FROM "users"`, s); len(got) != 0 {
+		t.Errorf("unexpected: %v", issueMessages(got))
+	}
+	// Quoted identifier with wrong case must still be flagged: PostgreSQL
+	// quoted idents are case-preserving and "Users" ≠ "users".
+	got := Lint(`SELECT * FROM "Users"`, s)
+	if len(got) != 1 || !strings.Contains(got[0].Message, "Users") {
+		t.Errorf("got %v", issueMessages(got))
+	}
+}
+
+func TestLint_CastOperator(t *testing.T) {
+	s := makeSchema()
+	if got := Lint(`SELECT u.id::text FROM users u`, s); len(got) != 0 {
+		t.Errorf("unexpected: %v", issueMessages(got))
+	}
+}
+
 func TestLint_FunctionNotFlagged(t *testing.T) {
 	s := makeSchema()
 	if got := Lint("SELECT now() FROM users", s); len(got) != 0 {

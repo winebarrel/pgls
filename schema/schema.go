@@ -12,6 +12,30 @@ type Schema struct {
 	Tables map[string]*Table
 }
 
+func (s *Schema) HasTable(name string) bool {
+	if s == nil {
+		return false
+	}
+	_, ok := s.Tables[name]
+	return ok
+}
+
+func (s *Schema) HasColumn(table, column string) bool {
+	if s == nil {
+		return false
+	}
+	t, ok := s.Tables[table]
+	if !ok {
+		return false
+	}
+	for _, c := range t.Columns {
+		if c.Name == column {
+			return true
+		}
+	}
+	return false
+}
+
 type Table struct {
 	Schema  string
 	Name    string

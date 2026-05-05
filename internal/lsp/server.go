@@ -126,16 +126,16 @@ func uriToPath(uri string) string {
 	return u.Path
 }
 
-func didOpen(_ *glsp.Context, params *protocol.DidOpenTextDocumentParams) error {
+func didOpen(ctx *glsp.Context, params *protocol.DidOpenTextDocumentParams) error {
 	docsMu.Lock()
-	defer docsMu.Unlock()
 	docs[params.TextDocument.URI] = params.TextDocument.Text
+	docsMu.Unlock()
+	publishDiagnostics(ctx, params.TextDocument.URI)
 	return nil
 }
 
-func didChange(_ *glsp.Context, params *protocol.DidChangeTextDocumentParams) error {
+func didChange(ctx *glsp.Context, params *protocol.DidChangeTextDocumentParams) error {
 	docsMu.Lock()
-	defer docsMu.Unlock()
 	text := docs[params.TextDocument.URI]
 	for _, change := range params.ContentChanges {
 		switch c := change.(type) {
@@ -148,14 +148,72 @@ func didChange(_ *glsp.Context, params *protocol.DidChangeTextDocumentParams) er
 		}
 	}
 	docs[params.TextDocument.URI] = text
+	docsMu.Unlock()
+	publishDiagnostics(ctx, params.TextDocument.URI)
 	return nil
 }
 
-func didClose(_ *glsp.Context, params *protocol.DidCloseTextDocumentParams) error {
+func didClose(ctx *glsp.Context, params *protocol.DidCloseTextDocumentParams) error {
 	docsMu.Lock()
-	defer docsMu.Unlock()
 	delete(docs, params.TextDocument.URI)
+	docsMu.Unlock()
+	// Clear any prior diagnostics so stale errors don't linger.
+	ctx.Notify(protocol.ServerTextDocumentPublishDiagnostics, &protocol.PublishDiagnosticsParams{
+		URI:         params.TextDocument.URI,
+		Diagnostics: []protocol.Diagnostic{},
+	})
 	return nil
+}
+
+func publishDiagnostics(ctx *glsp.Context, uri string) {
+	if loadedSchema == nil {
+		return
+	}
+	docsMu.Lock()
+	text := docs[uri]
+	docsMu.Unlock()
+	if text == "" {
+		return
+	}
+
+	src := []byte(text)
+	var diags []protocol.Diagnostic
+
+	if strings.HasSuffix(uri, ".go") {
+		for _, blk := range goast.FindAllSQL(src) {
+			for _, iss := range sqlctx.Lint(blk.SQL, loadedSchema) {
+				diags = append(diags, makeDiagnostic(src, blk.StartByte+iss.Start, blk.StartByte+iss.End, iss.Message))
+			}
+		}
+	} else {
+		for _, iss := range sqlctx.Lint(text, loadedSchema) {
+			diags = append(diags, makeDiagnostic(src, iss.Start, iss.End, iss.Message))
+		}
+	}
+
+	severity := protocol.DiagnosticSeverityError
+	source := name
+	for i := range diags {
+		diags[i].Severity = &severity
+		diags[i].Source = &source
+	}
+
+	ctx.Notify(protocol.ServerTextDocumentPublishDiagnostics, &protocol.PublishDiagnosticsParams{
+		URI:         uri,
+		Diagnostics: diags,
+	})
+}
+
+func makeDiagnostic(src []byte, start, end int, msg string) protocol.Diagnostic {
+	sLine, sChar := posenc.ByteToLSP(src, start)
+	eLine, eChar := posenc.ByteToLSP(src, end)
+	return protocol.Diagnostic{
+		Range: protocol.Range{
+			Start: protocol.Position{Line: uint32(sLine), Character: uint32(sChar)},
+			End:   protocol.Position{Line: uint32(eLine), Character: uint32(eChar)},
+		},
+		Message: msg,
+	}
 }
 
 func completion(_ *glsp.Context, params *protocol.CompletionParams) (any, error) {

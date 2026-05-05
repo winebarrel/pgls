@@ -87,6 +87,28 @@ func TestPastEnd(t *testing.T) {
 	}
 }
 
+func TestByteToLSP(t *testing.T) {
+	// Round-trip with ASCII and multibyte content.
+	src := []byte("abc\nあい\n🎉ab")
+	cases := []struct {
+		offset, line, char int
+	}{
+		{0, 0, 0},
+		{2, 0, 2},     // mid line 0
+		{4, 1, 0},     // start of line 1
+		{4 + 3, 1, 1}, // after あ
+		{11, 2, 0},    // start of line 2
+		{15, 2, 2},    // after 🎉
+		{16, 2, 3},    // after a
+	}
+	for _, c := range cases {
+		gotLine, gotChar := ByteToLSP(src, c.offset)
+		if gotLine != c.line || gotChar != c.char {
+			t.Errorf("offset=%d: got (%d,%d), want (%d,%d)", c.offset, gotLine, gotChar, c.line, c.char)
+		}
+	}
+}
+
 func TestStopsAtNewline(t *testing.T) {
 	// Asking for char beyond the visible line should not cross the newline.
 	src := []byte("ab\ncd")

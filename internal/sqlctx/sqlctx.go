@@ -80,7 +80,9 @@ func isIdent(s string) bool {
 	return c == '_' || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
 }
 
-// Words that terminate the table list of a FROM/JOIN/INTO/UPDATE clause.
+// Words that should not be treated as user-defined identifiers
+// (table names, aliases, column references). Used both to terminate
+// FROM-clause table lists and to skip keyword tokens during linting.
 var stopWords = map[string]bool{
 	"WHERE": true, "GROUP": true, "ORDER": true, "HAVING": true,
 	"LIMIT": true, "OFFSET": true, "ON": true, "USING": true,
@@ -89,6 +91,20 @@ var stopWords = map[string]bool{
 	"FROM": true, "AS": true, "AND": true, "OR": true, "NOT": true,
 	"INTO": true, "UPDATE": true, "RETURNING": true, "SELECT": true,
 	"WITH": true, "UNION": true, "EXCEPT": true, "INTERSECT": true,
+	"INSERT": true, "DELETE": true, "TRUNCATE": true, "TABLE": true,
+	"ALL": true, "DISTINCT": true, "BY": true, "ASC": true, "DESC": true,
+	"NULLS": true, "FIRST": true, "LAST": true,
+	"IS": true, "NULL": true, "TRUE": true, "FALSE": true,
+	"IN": true, "BETWEEN": true, "LIKE": true, "ILIKE": true,
+	"SIMILAR": true, "TO": true, "EXISTS": true, "ANY": true, "SOME": true,
+	"CASE": true, "WHEN": true, "THEN": true, "ELSE": true, "END": true,
+	"INTEGER": true, "INT": true, "BIGINT": true, "SMALLINT": true,
+	"BOOLEAN": true, "BOOL": true, "TEXT": true, "VARCHAR": true, "CHAR": true,
+	"DATE": true, "TIME": true, "TIMESTAMP": true, "TIMESTAMPTZ": true,
+	"NUMERIC": true, "DECIMAL": true, "REAL": true,
+	"DOUBLE": true, "PRECISION": true,
+	"JSON": true, "JSONB": true, "UUID": true, "BYTEA": true,
+	"IF": true,
 }
 
 func Analyze(sql string, cursor int) Context {

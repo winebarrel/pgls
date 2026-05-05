@@ -14,6 +14,47 @@ var sqlPrefixes = []string{
 	"CREATE", "ALTER", "DROP", "TRUNCATE",
 }
 
+// SQLString is a SQL-looking string literal found in Go source.
+type SQLString struct {
+	SQL       string
+	StartByte int // byte offset of the inner SQL within the source
+}
+
+// FindAllSQL returns every Go string literal whose contents look
+// like SQL. Used to drive whole-file analyses such as diagnostics.
+func FindAllSQL(src []byte) []SQLString {
+	fset := token.NewFileSet()
+	file, _ := parser.ParseFile(fset, "", src, parser.AllErrors)
+	if file == nil {
+		return nil
+	}
+	var out []SQLString
+	ast.Inspect(file, func(n ast.Node) bool {
+		lit, ok := n.(*ast.BasicLit)
+		if !ok || lit.Kind != token.STRING {
+			return true
+		}
+		raw := lit.Value
+		if len(raw) < 2 {
+			return true
+		}
+		q := raw[0]
+		if q != '"' && q != '`' {
+			return true
+		}
+		inner := raw[1 : len(raw)-1]
+		if !looksLikeSQL(inner) {
+			return true
+		}
+		out = append(out, SQLString{
+			SQL:       inner,
+			StartByte: fset.Position(lit.Pos()).Offset + 1,
+		})
+		return true
+	})
+	return out
+}
+
 // FindSQL returns the SQL text and the byte offset of the cursor within
 // it when the cursor sits inside a string literal that looks like SQL.
 //

@@ -357,7 +357,11 @@ func publishDiagnostics(uri string) {
 	}
 
 	src := []byte(text)
-	var diags []protocol.Diagnostic
+	// Initialise as an empty slice — Go marshals a nil []T to JSON
+	// `null`, which VSCode treats as "no change" instead of "clear
+	// the diagnostics for this document". An explicit `[]` is what
+	// actually wipes stale errors.
+	diags := []protocol.Diagnostic{}
 
 	if strings.HasSuffix(uri, ".go") {
 		for _, blk := range goast.FindAllSQL(src) {

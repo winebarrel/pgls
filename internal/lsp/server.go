@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/fsnotify/fsnotify"
@@ -41,6 +42,18 @@ var (
 	cliDir       string
 	watcherOnce  sync.Once
 	watcherStart sync.Mutex // serializes attempts to (re)configure the watcher
+
+	// publishMu serializes publishDiagnostics so that the notification
+	// stream stays in sequence even when didChange fans out across
+	// goroutines (jsonrpc2.HandlerWithError dispatches each request in
+	// its own goroutine).
+	publishMu sync.Mutex
+
+	// publishSeqs maps each document URI to a monotonic counter that's
+	// bumped on every publish request. A handler holding publishMu
+	// drops its work if the counter has advanced past its captured seq,
+	// so a backlog of stale diagnostics can never overwrite a newer one.
+	publishSeqs sync.Map // uri -> *atomic.Uint64
 )
 
 func Run(cliSchemaDir string) error {
@@ -317,6 +330,18 @@ func didClose(_ *glsp.Context, params *protocol.DidCloseTextDocumentParams) erro
 }
 
 func publishDiagnostics(uri string) {
+	seqPtr, _ := publishSeqs.LoadOrStore(uri, new(atomic.Uint64))
+	seq := seqPtr.(*atomic.Uint64)
+	mySeq := seq.Add(1)
+
+	publishMu.Lock()
+	defer publishMu.Unlock()
+
+	// While we waited for the mutex another publish for the same URI may
+	// have been queued. Skip if so — it will run with fresher state.
+	if seq.Load() != mySeq {
+		return
+	}
 	if notify == nil {
 		return
 	}
@@ -325,9 +350,9 @@ func publishDiagnostics(uri string) {
 		return
 	}
 	docsMu.Lock()
-	text := docs[uri]
+	text, open := docs[uri]
 	docsMu.Unlock()
-	if text == "" {
+	if !open {
 		return
 	}
 

@@ -9,6 +9,9 @@ import (
 )
 
 func Load(dir string) (*Schema, error) {
+	if abs, err := filepath.Abs(dir); err == nil {
+		dir = abs
+	}
 	merged := &Schema{Tables: map[string]*Table{}}
 	err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {

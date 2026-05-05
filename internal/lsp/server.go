@@ -63,12 +63,13 @@ func Run(cliSchemaDir string) error {
 		Initialized:            func(*glsp.Context, *protocol.InitializedParams) error { return nil },
 		Shutdown:               func(*glsp.Context) error { return nil },
 		SetTrace:               func(*glsp.Context, *protocol.SetTraceParams) error { return nil },
-		TextDocumentDidOpen:    didOpen,
-		TextDocumentDidChange:  didChange,
-		TextDocumentDidClose:   didClose,
-		TextDocumentCompletion: completion,
-		TextDocumentHover:      hover,
-		TextDocumentDefinition: definition,
+		TextDocumentDidOpen:      didOpen,
+		TextDocumentDidChange:    didChange,
+		TextDocumentDidClose:     didClose,
+		TextDocumentCompletion:   completion,
+		TextDocumentHover:        hover,
+		TextDocumentDefinition:   definition,
+		TextDocumentDocumentLink: documentLink,
 	}
 	srv := server.NewServer(&handler, name, false)
 	return srv.RunStdio()
@@ -519,6 +520,85 @@ func scopedColumnItems(s *schema.Schema, tableNames []string, aliases map[string
 		}
 	}
 	return items
+}
+
+// documentLink overrides VSCode's built-in URL detection for SQL
+// identifiers that happen to look like domain names — `u.email`,
+// `o.id`, etc. — by pointing them at file:// URLs of the schema
+// definition. VSCode prefers LSP-supplied document links over its
+// own pattern-matched ones, so Cmd-click no longer opens a browser.
+func documentLink(_ *glsp.Context, params *protocol.DocumentLinkParams) ([]protocol.DocumentLink, error) {
+	sch := currentSchema()
+	if sch == nil {
+		return []protocol.DocumentLink{}, nil
+	}
+	uri := params.TextDocument.URI
+	docsMu.Lock()
+	text := docs[uri]
+	docsMu.Unlock()
+	if text == "" {
+		return []protocol.DocumentLink{}, nil
+	}
+	src := []byte(text)
+
+	links := []protocol.DocumentLink{}
+	appendBlock := func(sql string, baseByte int) {
+		symbols, aliases, _ := sqlctx.WalkSymbols(sql)
+		for _, sym := range symbols {
+			target := symbolTarget(sch, sym, aliases)
+			if target == "" {
+				continue
+			}
+			startB := baseByte + sym.Start
+			endB := baseByte + sym.End
+			sLine, sChar := posenc.ByteToLSP(src, startB)
+			eLine, eChar := posenc.ByteToLSP(src, endB)
+			t := target
+			links = append(links, protocol.DocumentLink{
+				Range: protocol.Range{
+					Start: protocol.Position{Line: uint32(sLine), Character: uint32(sChar)},
+					End:   protocol.Position{Line: uint32(eLine), Character: uint32(eChar)},
+				},
+				Target: &t,
+			})
+		}
+	}
+	if strings.HasSuffix(uri, ".go") {
+		for _, blk := range goast.FindAllSQL(src) {
+			appendBlock(blk.SQL, blk.StartByte)
+		}
+	} else {
+		appendBlock(text, 0)
+	}
+	return links, nil
+}
+
+func symbolTarget(s *schema.Schema, sym sqlctx.Symbol, aliases map[string]string) string {
+	var pos *schema.Position
+	switch sym.Kind {
+	case sqlctx.SymbolTable, sqlctx.SymbolQualifier:
+		if t, ok := s.Tables[sym.Name]; ok {
+			pos = &t.Position
+		} else if real, ok := aliases[sym.Name]; ok {
+			if t, ok := s.Tables[real]; ok {
+				pos = &t.Position
+			}
+		}
+	case sqlctx.SymbolQualifiedColumn:
+		realName, ok := aliases[sym.Qualifier]
+		if !ok {
+			realName = sym.Qualifier
+		}
+		if t, ok := s.Tables[realName]; ok {
+			if c := findColumn(t, sym.Name); c != nil {
+				pos = &c.Position
+			}
+		}
+	}
+	if pos == nil || pos.Path == "" {
+		return ""
+	}
+	return "file://" + pos.Path
 }
 
 func definition(_ *glsp.Context, params *protocol.DefinitionParams) (any, error) {

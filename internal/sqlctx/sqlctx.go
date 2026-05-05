@@ -23,6 +23,34 @@ type Context struct {
 	Aliases    map[string]string // alias -> real table name
 }
 
+// Identifier describes a single identifier under the cursor for hover/lookup.
+type Identifier struct {
+	Name      string
+	Qualifier string // empty if unqualified
+	Start     int    // byte offset within the SQL string
+	End       int
+}
+
+// IdentifierAt returns the identifier covering the byte offset cursor,
+// recognizing a leading "qualifier." prefix when present.
+func IdentifierAt(sql string, cursor int) (Identifier, bool) {
+	tokens := tokenize(sql)
+	for i, t := range tokens {
+		if !isIdent(t.text) {
+			continue
+		}
+		if cursor < t.start || cursor > t.end {
+			continue
+		}
+		id := Identifier{Name: t.text, Start: t.start, End: t.end}
+		if i >= 2 && tokens[i-1].text == "." && isIdent(tokens[i-2].text) {
+			id.Qualifier = tokens[i-2].text
+		}
+		return id, true
+	}
+	return Identifier{}, false
+}
+
 type token struct {
 	text  string
 	start int

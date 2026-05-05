@@ -119,6 +119,46 @@ func TestUpdateSet(t *testing.T) {
 	}
 }
 
+func TestIdentifierAt(t *testing.T) {
+	sql, cur := at(t, "SELECT em<|>ail FROM users")
+	id, ok := IdentifierAt(sql, cur)
+	if !ok {
+		t.Fatal("want ok")
+	}
+	if id.Name != "email" || id.Qualifier != "" {
+		t.Errorf("got %+v", id)
+	}
+}
+
+func TestIdentifierAtQualified(t *testing.T) {
+	sql, cur := at(t, "SELECT u.em<|>ail FROM users u")
+	id, ok := IdentifierAt(sql, cur)
+	if !ok {
+		t.Fatal("want ok")
+	}
+	if id.Name != "email" || id.Qualifier != "u" {
+		t.Errorf("got %+v", id)
+	}
+}
+
+func TestIdentifierAtTableName(t *testing.T) {
+	sql, cur := at(t, "SELECT * FROM us<|>ers")
+	id, ok := IdentifierAt(sql, cur)
+	if !ok {
+		t.Fatal("want ok")
+	}
+	if id.Name != "users" || id.Qualifier != "" {
+		t.Errorf("got %+v", id)
+	}
+}
+
+func TestIdentifierAtNotIdent(t *testing.T) {
+	sql, cur := at(t, "SELECT *<|> FROM users")
+	if _, ok := IdentifierAt(sql, cur); ok {
+		t.Error("want not ok on '*'")
+	}
+}
+
 func TestSchemaQualifiedTable(t *testing.T) {
 	sql, cur := at(t, "SELECT * FROM public.users WHERE <|>")
 	c := Analyze(sql, cur)

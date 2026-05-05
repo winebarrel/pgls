@@ -43,6 +43,7 @@ func Run(initialSchema *schema.Schema) error {
 		TextDocumentDidChange:  didChange,
 		TextDocumentDidClose:   didClose,
 		TextDocumentCompletion: completion,
+		TextDocumentHover:      hover,
 	}
 	srv := server.NewServer(&handler, name, false)
 	return srv.RunStdio()
@@ -212,6 +213,107 @@ func contextItems(s *schema.Schema, ctx sqlctx.Context) []protocol.CompletionIte
 	default:
 		return allItems(s)
 	}
+}
+
+func hover(_ *glsp.Context, params *protocol.HoverParams) (*protocol.Hover, error) {
+	if loadedSchema == nil {
+		return nil, nil
+	}
+	uri := params.TextDocument.URI
+	docsMu.Lock()
+	text := docs[uri]
+	docsMu.Unlock()
+
+	var sql string
+	var off int
+	line, char := int(params.Position.Line), int(params.Position.Character)
+
+	if strings.HasSuffix(uri, ".go") {
+		s, o, ok := goast.FindSQL([]byte(text), line, char)
+		if !ok {
+			return nil, nil
+		}
+		sql, off = s, o
+	} else {
+		sql = text
+		off = posenc.LSPToByte([]byte(text), line, char)
+	}
+
+	id, ok := sqlctx.IdentifierAt(sql, off)
+	if !ok {
+		return nil, nil
+	}
+	ctx := sqlctx.Analyze(sql, off)
+	md := hoverMarkdown(loadedSchema, id, ctx)
+	if md == "" {
+		return nil, nil
+	}
+	return &protocol.Hover{
+		Contents: protocol.MarkupContent{
+			Kind:  protocol.MarkupKindMarkdown,
+			Value: md,
+		},
+	}, nil
+}
+
+func hoverMarkdown(s *schema.Schema, id sqlctx.Identifier, ctx sqlctx.Context) string {
+	if id.Qualifier != "" {
+		realName, ok := ctx.Aliases[id.Qualifier]
+		if !ok {
+			realName = id.Qualifier
+		}
+		if t, ok := s.Tables[realName]; ok {
+			if c := findColumn(t, id.Name); c != nil {
+				return fmt.Sprintf("**%s.%s** `%s`", t.Name, c.Name, c.Type)
+			}
+		}
+		return ""
+	}
+
+	if t, ok := s.Tables[id.Name]; ok {
+		return formatTable(t)
+	}
+	if real, ok := ctx.Aliases[id.Name]; ok && real != id.Name {
+		if t, ok := s.Tables[real]; ok {
+			return formatTable(t) + fmt.Sprintf("\n_alias: `%s`_", id.Name)
+		}
+	}
+
+	candidates := ctx.FromTables
+	if len(candidates) == 0 {
+		for n := range s.Tables {
+			candidates = append(candidates, n)
+		}
+	}
+	for _, name := range candidates {
+		t, ok := s.Tables[name]
+		if !ok {
+			continue
+		}
+		if c := findColumn(t, id.Name); c != nil {
+			return fmt.Sprintf("**%s.%s** `%s`", t.Name, c.Name, c.Type)
+		}
+	}
+	return ""
+}
+
+func findColumn(t *schema.Table, name string) *schema.Column {
+	for _, c := range t.Columns {
+		if c.Name == name {
+			return c
+		}
+	}
+	return nil
+}
+
+func formatTable(t *schema.Table) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "**%s** (table)\n\n", t.Name)
+	b.WriteString("| Column | Type |\n| --- | --- |\n")
+	for _, c := range t.Columns {
+		fmt.Fprintf(&b, "| %s | `%s` |\n", c.Name, c.Type)
+	}
+	return b.String()
 }
 
 func tableItems(s *schema.Schema) []protocol.CompletionItem {

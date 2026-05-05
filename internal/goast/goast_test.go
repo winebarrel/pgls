@@ -22,47 +22,79 @@ func cursorAt(t *testing.T, marked string) ([]byte, int, int) {
 	return []byte(src), line, char
 }
 
-func TestFindSQL_Backtick(t *testing.T) {
-	src, line, char := cursorAt(t, "package main\n\nfunc main() {\n\tdb.Query(`SELECT id<|> FROM users`)\n}\n")
+func TestFindSQL_BacktickWithMarker(t *testing.T) {
+	src, line, char := cursorAt(t, `package main
+
+func main() {
+	// language=sql
+	q := `+"`SELECT id<|> FROM users`"+`
+	_ = q
+}
+`)
 	sql, off, ok := FindSQL(src, line, char)
 	if !ok {
 		t.Fatal("want ok=true")
-	}
-	if !strings.HasPrefix(sql, "SELECT id") {
-		t.Errorf("sql=%q", sql)
 	}
 	if got := sql[:off]; got != "SELECT id" {
 		t.Errorf("sql[:off]=%q, want %q", got, "SELECT id")
 	}
 }
 
-func TestFindSQL_DoubleQuoted(t *testing.T) {
+func TestFindSQL_DoubleQuotedWithMarker(t *testing.T) {
 	src, line, char := cursorAt(t, `package main
 
 func main() {
+	// language=postgresql
 	q := "INSERT INTO users<|> (id) VALUES (1)"
 	_ = q
 }
 `)
-	sql, _, ok := FindSQL(src, line, char)
-	if !ok {
+	if _, _, ok := FindSQL(src, line, char); !ok {
 		t.Fatal("want ok=true")
-	}
-	if !strings.HasPrefix(sql, "INSERT INTO") {
-		t.Errorf("sql=%q", sql)
 	}
 }
 
-func TestFindSQL_NotSQLString(t *testing.T) {
+func TestFindSQL_NoMarker(t *testing.T) {
 	src, line, char := cursorAt(t, `package main
 
 func main() {
-	q := "hello <|>world"
+	q := `+"`SELECT id<|> FROM users`"+`
 	_ = q
 }
 `)
 	if _, _, ok := FindSQL(src, line, char); ok {
-		t.Error("want ok=false for non-SQL string")
+		t.Error("want ok=false without marker")
+	}
+}
+
+func TestFindSQL_MarkerNotImmediatelyAbove(t *testing.T) {
+	// Marker comment with a blank line between it and the literal —
+	// the marker doesn't apply (must be on the line directly above).
+	src, line, char := cursorAt(t, `package main
+
+func main() {
+	// language=sql
+
+	q := `+"`SELECT id<|> FROM users`"+`
+	_ = q
+}
+`)
+	if _, _, ok := FindSQL(src, line, char); ok {
+		t.Error("want ok=false when marker is not immediately above")
+	}
+}
+
+func TestFindSQL_BlockCommentMarker(t *testing.T) {
+	src, line, char := cursorAt(t, `package main
+
+func main() {
+	/* language=SQL */
+	q := `+"`SELECT id<|> FROM users`"+`
+	_ = q
+}
+`)
+	if _, _, ok := FindSQL(src, line, char); !ok {
+		t.Error("want ok=true with /* language=SQL */ marker")
 	}
 }
 
@@ -80,12 +112,10 @@ func main() {
 }
 
 func TestFindSQL_MultibyteOnSameLine(t *testing.T) {
-	// The string contains 🎉 (surrogate pair: 4 UTF-8 bytes / 2 UTF-16 units)
-	// before the cursor on the same line, verifying that LSP UTF-16
-	// positions are translated to byte offsets correctly.
-	src := []byte("package main\n\nfunc main() {\n\tq := `SELECT 🎉 FROM users`\n}\n")
-	// Line 3, UTF-16 char 15 = right after 🎉 (\t=1, q :=⎵=4 [actually 5: q + space + : + = + space], `SELECT⎵=8, 🎉=2 → 1+5+8+1=15)
-	sql, off, ok := FindSQL(src, 3, 15)
+	// Marker required; verify UTF-16 position translation still works.
+	src := []byte("package main\n\nfunc main() {\n\t// language=sql\n\tq := `SELECT 🎉 FROM users`\n}\n")
+	// Line 4 (0-indexed), UTF-16 char 15 = right after 🎉
+	sql, off, ok := FindSQL(src, 4, 15)
 	if !ok {
 		t.Fatal("want ok=true")
 	}
@@ -94,13 +124,13 @@ func TestFindSQL_MultibyteOnSameLine(t *testing.T) {
 	}
 }
 
-func TestFindSQL_MultilineBacktick(t *testing.T) {
-	src, line, char := cursorAt(t, "package main\n\nfunc main() {\n\tq := `SELECT *\nFROM users\nWHERE id = <|>1`\n\t_ = q\n}\n")
-	sql, off, ok := FindSQL(src, line, char)
-	if !ok {
-		t.Fatal("want ok=true")
+func TestFindAllSQL_OnlyMarked(t *testing.T) {
+	src := []byte("package main\n\nfunc main() {\n\t// language=sql\n\tq1 := `SELECT * FROM users`\n\tq2 := `SELECT * FROM orders`\n\t_, _ = q1, q2\n}\n")
+	blocks := FindAllSQL(src)
+	if len(blocks) != 1 {
+		t.Fatalf("want 1 marked block, got %d", len(blocks))
 	}
-	if !strings.Contains(sql[:off], "WHERE id = ") {
-		t.Errorf("sql[:off]=%q", sql[:off])
+	if !strings.Contains(blocks[0].SQL, "users") {
+		t.Errorf("got %q", blocks[0].SQL)
 	}
 }

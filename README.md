@@ -89,9 +89,20 @@ client.start();
 - **Diagnostics** — flags `FROM`/`JOIN` references to unknown
   tables, qualifiers that resolve to neither a table nor an alias,
   and qualified columns missing from the resolved table.
-- **Go-aware** — inside `.go` files, all of the above only fires
-  when the cursor sits inside a string literal whose contents look
-  like SQL (begins with `SELECT`/`INSERT`/`UPDATE`/...).
+- **Go-aware** — inside `.go` files, all features only fire on
+  string literals that have a `language=sql` (or `language=postgresql`)
+  marker comment on the line directly above. The marker convention is
+  borrowed from JetBrains IDEs:
+
+  ```go
+  // language=sql
+  q := `SELECT id, email FROM users WHERE id = $1`
+  ```
+
+  Block-comment form (`/* language=sql */`) is also accepted. The
+  match is case-insensitive. Without a marker, pgls leaves the string
+  alone — no completion, no diagnostics — so non-SQL strings never
+  get false hits.
 - **Hot reload** — the schema directory is watched; editing or adding
   `.sql` files triggers a reload (debounced 200 ms) and republishes
   diagnostics for all open documents.

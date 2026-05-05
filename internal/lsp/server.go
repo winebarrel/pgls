@@ -1,6 +1,7 @@
 package lsp
 
 import (
+	"bytes"
 	"fmt"
 	"strings"
 	"sync"
@@ -9,6 +10,7 @@ import (
 	protocol "github.com/tliron/glsp/protocol_3_16"
 	"github.com/tliron/glsp/server"
 	"github.com/winebarrel/pgls/internal/goast"
+	"github.com/winebarrel/pgls/internal/sqlctx"
 	"github.com/winebarrel/pgls/schema"
 )
 
@@ -94,36 +96,112 @@ func completion(_ *glsp.Context, params *protocol.CompletionParams) (any, error)
 		return []protocol.CompletionItem{}, nil
 	}
 	uri := params.TextDocument.URI
+	docsMu.Lock()
+	text := docs[uri]
+	docsMu.Unlock()
+
+	var sql string
+	var off int
+	line, char := int(params.Position.Line), int(params.Position.Character)
+
 	if strings.HasSuffix(uri, ".go") {
-		docsMu.Lock()
-		text := docs[uri]
-		docsMu.Unlock()
-		if _, _, ok := goast.FindSQL([]byte(text), int(params.Position.Line), int(params.Position.Character)); !ok {
+		s, o, ok := goast.FindSQL([]byte(text), line, char)
+		if !ok {
 			return []protocol.CompletionItem{}, nil
 		}
+		sql, off = s, o
+	} else {
+		sql = text
+		off = byteOffset([]byte(text), line, char)
 	}
-	return schemaItems(loadedSchema), nil
+
+	ctx := sqlctx.Analyze(sql, off)
+	return contextItems(loadedSchema, ctx), nil
 }
 
-func schemaItems(s *schema.Schema) []protocol.CompletionItem {
-	tableKind := protocol.CompletionItemKindClass
-	fieldKind := protocol.CompletionItemKindField
+func byteOffset(src []byte, line, character int) int {
+	pos := 0
+	for l := 0; l < line; l++ {
+		nl := bytes.IndexByte(src[pos:], '\n')
+		if nl < 0 {
+			return len(src)
+		}
+		pos += nl + 1
+	}
+	pos += character
+	if pos > len(src) {
+		return len(src)
+	}
+	return pos
+}
+
+func contextItems(s *schema.Schema, ctx sqlctx.Context) []protocol.CompletionItem {
+	switch ctx.State {
+	case sqlctx.StateTable:
+		return tableItems(s)
+	case sqlctx.StateQualifiedColumn:
+		realName, ok := ctx.Aliases[ctx.Qualifier]
+		if !ok {
+			realName = ctx.Qualifier
+		}
+		if t, ok := s.Tables[realName]; ok {
+			return columnItems(t)
+		}
+		return nil
+	case sqlctx.StateColumn:
+		if len(ctx.FromTables) > 0 {
+			var items []protocol.CompletionItem
+			for _, n := range ctx.FromTables {
+				if t, ok := s.Tables[n]; ok {
+					items = append(items, columnItems(t)...)
+				}
+			}
+			return items
+		}
+		return allColumnItems(s)
+	default:
+		return allItems(s)
+	}
+}
+
+func tableItems(s *schema.Schema) []protocol.CompletionItem {
+	kind := protocol.CompletionItemKindClass
+	detail := "table"
 	var items []protocol.CompletionItem
 	for _, t := range s.Tables {
-		tableDetail := "table"
 		items = append(items, protocol.CompletionItem{
 			Label:  t.Name,
-			Kind:   &tableKind,
-			Detail: &tableDetail,
+			Kind:   &kind,
+			Detail: &detail,
 		})
-		for _, c := range t.Columns {
-			colDetail := fmt.Sprintf("%s.%s %s", t.Name, c.Name, c.Type)
-			items = append(items, protocol.CompletionItem{
-				Label:  c.Name,
-				Kind:   &fieldKind,
-				Detail: &colDetail,
-			})
-		}
 	}
+	return items
+}
+
+func columnItems(t *schema.Table) []protocol.CompletionItem {
+	kind := protocol.CompletionItemKindField
+	var items []protocol.CompletionItem
+	for _, c := range t.Columns {
+		detail := fmt.Sprintf("%s.%s %s", t.Name, c.Name, c.Type)
+		items = append(items, protocol.CompletionItem{
+			Label:  c.Name,
+			Kind:   &kind,
+			Detail: &detail,
+		})
+	}
+	return items
+}
+
+func allColumnItems(s *schema.Schema) []protocol.CompletionItem {
+	var items []protocol.CompletionItem
+	for _, t := range s.Tables {
+		items = append(items, columnItems(t)...)
+	}
+	return items
+}
+
+func allItems(s *schema.Schema) []protocol.CompletionItem {
+	items := tableItems(s)
+	items = append(items, allColumnItems(s)...)
 	return items
 }

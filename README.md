@@ -63,17 +63,12 @@ language-servers = ["pgls"]
 
 ### VSCode
 
-Launch via a thin extension that wraps `vscode-languageclient`:
+Install the [pgls-vscode](https://github.com/winebarrel/pgls-vscode)
+extension. It spawns the `pgls` binary on `.go` and `.sql` files;
+configure the schema directory per-workspace in `.vscode/settings.json`:
 
-```js
-const client = new LanguageClient('pgls', 'pgls', {
-  run: { command: 'pgls' },
-  debug: { command: 'pgls' },
-}, {
-  documentSelector: [{ language: 'go' }, { language: 'sql' }],
-  initializationOptions: { schemaDir: 'db/schema' },
-});
-client.start();
+```json
+{ "pgls.schemaDir": "db/schema" }
 ```
 
 ## Features

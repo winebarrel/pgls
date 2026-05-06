@@ -31,7 +31,11 @@ type Issue struct {
 // CTE column names, function calls, or values from outer scopes.
 func Lint(sql string, s Schema) []Issue {
 	tokens := tokenize(sql)
-	info := extractTables(tokens)
+	// Use the statement-aware extractor: aliases collected inside a
+	// non-query statement (e.g. CREATE VIEW v AS SELECT ... FROM
+	// users u) must not leak into a later query statement's scope
+	// and silently swallow diagnostics there.
+	info := extractQueryStatementTables(tokens)
 	aliases := info.aliases
 	skip := lintSkipTokens(tokens)
 
@@ -187,18 +191,3 @@ func lintSkipTokens(tokens []token) map[int]bool {
 	return skip
 }
 
-// isQueryLeadingKeyword reports whether the leading keyword of a SQL
-// statement marks it as a query that pgls's lint should examine.
-// The set is intentionally narrow:
-//   - SELECT / INSERT / UPDATE / DELETE / MERGE — core DML.
-//   - WITH — always feeds one of the above.
-//   - VALUES — top-level value list, harmless to lint.
-//   - EXPLAIN — wraps another statement; lint sees through to it.
-func isQueryLeadingKeyword(s string) bool {
-	switch strings.ToUpper(s) {
-	case "SELECT", "INSERT", "UPDATE", "DELETE", "MERGE",
-		"WITH", "VALUES", "EXPLAIN":
-		return true
-	}
-	return false
-}

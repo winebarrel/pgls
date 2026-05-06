@@ -269,6 +269,36 @@ func TestLint_QueryAfterNonQueryStillFlagged(t *testing.T) {
 	}
 }
 
+func TestLint_AliasesFromNonQueryDontLeak(t *testing.T) {
+	// CREATE VIEW (or any non-query statement) wraps a SELECT that
+	// can introduce aliases. Those aliases live inside the DDL's
+	// scope only — a later, separate query statement must not see
+	// them. Without statement-aware extractTables, the alias `u`
+	// from the CREATE leaked across the `;` and silently masked the
+	// `unknown table or alias "u"` diagnostic that the second
+	// statement actually deserves.
+	s := makeSchema()
+	sql := `CREATE VIEW v AS SELECT * FROM users u; SELECT u.id FROM bogus`
+	got := issueMessages(Lint(sql, s))
+
+	hasU := false
+	hasBogus := false
+	for _, m := range got {
+		if strings.Contains(m, `"u"`) {
+			hasU = true
+		}
+		if strings.Contains(m, "bogus") {
+			hasBogus = true
+		}
+	}
+	if !hasU {
+		t.Errorf("expected unknown-alias diagnostic for `u` (DDL alias must not leak); got %v", got)
+	}
+	if !hasBogus {
+		t.Errorf("expected unknown-table diagnostic for bogus; got %v", got)
+	}
+}
+
 func TestLint_ExplainSelectStillLinted(t *testing.T) {
 	// `EXPLAIN SELECT ...` is in the allow-list, so the inner SELECT
 	// still gets validated.

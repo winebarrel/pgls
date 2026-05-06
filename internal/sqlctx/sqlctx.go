@@ -198,6 +198,53 @@ func extractTables(tokens []token) *tablesInfo {
 	return info
 }
 
+// extractQueryStatementTables is the lint-scoped version of
+// extractTables: it walks the token stream a statement at a time
+// (split on `;`) and only collects aliases / real tables / CTE
+// names from statements whose leading keyword is a query verb.
+// That keeps DDL-only aliases (e.g. `CREATE VIEW v AS SELECT *
+// FROM users u`) from leaking into the lint scope of an adjacent
+// query statement and silently suppressing real diagnostics.
+//
+// The non-statement-aware extractTables stays in use for Analyze
+// (cursor-position completion), where seeing tables across the
+// whole document is the desired behavior.
+func extractQueryStatementTables(tokens []token) *tablesInfo {
+	info := newTablesInfo()
+	start := 0
+	for i := 0; i <= len(tokens); i++ {
+		if i < len(tokens) && tokens[i].text != ";" {
+			continue
+		}
+		if i > start && isQueryLeadingKeyword(tokens[start].text) {
+			extractTablesRange(tokens, start, i, info)
+		}
+		start = i + 1
+	}
+	return info
+}
+
+// isQueryLeadingKeyword reports whether the leading keyword of a SQL
+// statement marks it as a query that pgls's lint should examine.
+// The set is intentionally narrow:
+//   - SELECT / INSERT / UPDATE / DELETE / MERGE — core DML.
+//   - WITH — always feeds one of the above.
+//   - VALUES — top-level value list, harmless to lint.
+//   - EXPLAIN — wraps another statement; lint sees through to it.
+//
+// Allow-listing rather than blocklisting DDL keeps pgls future-proof:
+// query verbs are small and stable, while DDL gets new verbs across
+// PostgreSQL versions. A missed DDL keyword would re-introduce false
+// positives; an unrecognised DML form simply isn't validated.
+func isQueryLeadingKeyword(s string) bool {
+	switch strings.ToUpper(s) {
+	case "SELECT", "INSERT", "UPDATE", "DELETE", "MERGE",
+		"WITH", "VALUES", "EXPLAIN":
+		return true
+	}
+	return false
+}
+
 func extractTablesRange(tokens []token, start, end int, info *tablesInfo) {
 	i := start
 	for i < end {

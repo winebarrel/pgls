@@ -66,6 +66,20 @@ func WalkSymbols(sql string) (symbols []Symbol, aliases map[string]string, virtu
 		if prev != nil && prev.text == "." {
 			prev2 := tokenPtr(tokens, i-2)
 			if prev2 != nil && isIdent(prev2.text) && !stopWords[strings.ToUpper(prev2.text)] {
+				// `FROM/JOIN/INTO/UPDATE schema.table` — the right
+				// side is a bare table reference, not a qualified
+				// column. Emit it as SymbolTable so documentLink and
+				// the other consumers can resolve it.
+				prev3 := tokenPtr(tokens, i-3)
+				if prev3 != nil && isFromKeyword(prev3.text) {
+					symbols = append(symbols, Symbol{
+						Kind:  SymbolTable,
+						Name:  t.text,
+						Start: t.start,
+						End:   t.end,
+					})
+					continue
+				}
 				symbols = append(symbols, Symbol{
 					Kind:      SymbolQualifiedColumn,
 					Name:      t.text,

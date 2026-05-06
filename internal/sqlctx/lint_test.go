@@ -84,6 +84,73 @@ func TestLint_QualifierViaTableName(t *testing.T) {
 	}
 }
 
+func TestLint_SchemaQualifiedUnknownTable(t *testing.T) {
+	// `FROM schema.table` — when the table doesn't exist, lint should
+	// flag it. Previously the linear walker fell into the
+	// qualified-column branch, found that "public" wasn't a table, and
+	// silently skipped — a false negative.
+	s := makeSchema()
+	issues := Lint("SELECT * FROM public.bogus", s)
+	if len(issues) != 1 || !strings.Contains(issues[0].Message, "bogus") {
+		t.Fatalf("got %v", issueMessages(issues))
+	}
+}
+
+func TestLint_SchemaQualifiedAcrossKeywords(t *testing.T) {
+	// FROM/JOIN/UPDATE share isFromKeyword in the schema-qualified
+	// branch, so they should behave identically. Pin examples for
+	// keywords other than FROM (already covered above) so a future
+	// per-keyword change can't silently regress.
+	//
+	// INSERT INTO is intentionally absent: pgls's linear walker
+	// treats `ident(` as a function call before the table check
+	// even runs, so `INSERT INTO public.bogus (id) VALUES ...` is a
+	// pre-existing blind spot for bare and schema-qualified alike.
+	// That's a separate scope.
+	s := makeSchema()
+	cases := []string{
+		`SELECT * FROM users JOIN public.bogus ON 1=1`,
+		`UPDATE public.bogus SET id = 1`,
+	}
+	for _, sql := range cases {
+		got := Lint(sql, s)
+		if len(got) != 1 || !strings.Contains(got[0].Message, "bogus") {
+			t.Errorf("%q: got %v", sql, issueMessages(got))
+		}
+	}
+}
+
+func TestLint_SchemaQualifiedKnownTable(t *testing.T) {
+	// `FROM public.users` where both "public" (a table) and "users" (a
+	// table) exist in the schema must NOT produce
+	//   `column "users" not in table "public"`
+	// — that was a false positive from misinterpreting the schema
+	// qualifier as a table-qualified column reference.
+	s := fakeSchema{
+		tables: map[string]bool{"users": true, "public": true},
+		columns: map[string]map[string]bool{
+			"users":  {"id": true},
+			"public": {"id": true},
+		},
+	}
+	if got := Lint("SELECT * FROM public.users", s); len(got) != 0 {
+		t.Errorf("unexpected: %v", issueMessages(got))
+	}
+}
+
+func TestLint_SchemaQualifiedCTENameStillFlagged(t *testing.T) {
+	// PostgreSQL doesn't let you schema-qualify a CTE reference: the
+	// CTE namespace is separate from the schema-qualified table
+	// namespace. So `FROM public.active` where `active` is only a
+	// CTE must still be flagged as unknown — even though the
+	// bare-table branch would accept `FROM active` here.
+	s := makeSchema()
+	got := Lint(`WITH active AS (SELECT 1) SELECT * FROM public.active`, s)
+	if len(got) != 1 || !strings.Contains(got[0].Message, "active") {
+		t.Errorf("got %v", issueMessages(got))
+	}
+}
+
 func TestLint_JoinUnknown(t *testing.T) {
 	s := makeSchema()
 	issues := Lint("SELECT * FROM users JOIN nope ON 1=1", s)

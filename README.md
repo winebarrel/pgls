@@ -13,8 +13,19 @@ CGO is required).
 
 ## Install
 
+### Pre-built binaries
+
+Download an archive for your platform from the
+[releases page](https://github.com/winebarrel/pgls/releases),
+extract it, and drop `pgls` somewhere on your `$PATH`. Builds
+are produced for darwin / linux / windows × amd64 / arm64.
+
+### From source
+
+Requires Go 1.22 or later:
+
 ```sh
-go install github.com/winebarrel/pgls@latest
+go install github.com/winebarrel/pgls@v0.1.0
 ```
 
 ## Quickstart

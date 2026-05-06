@@ -55,7 +55,6 @@ func FindAllSQL(src []byte, funcs SQLFunctions) []SQLString {
 	inFunc := callSQLPositions(file, funcs)
 
 	var out []SQLString
-	seen := map[token.Pos]bool{}
 	ast.Inspect(file, func(n ast.Node) bool {
 		lit, ok := n.(*ast.BasicLit)
 		if !ok || lit.Kind != token.STRING {
@@ -64,10 +63,6 @@ func FindAllSQL(src []byte, funcs SQLFunctions) []SQLString {
 		if !marked[lit.Pos()] && !inFunc[lit.Pos()] {
 			return true
 		}
-		if seen[lit.Pos()] {
-			return true
-		}
-		seen[lit.Pos()] = true
 		inner, ok := stripQuotes(lit.Value)
 		if !ok {
 			return true

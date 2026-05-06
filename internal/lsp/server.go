@@ -89,7 +89,9 @@ type initOptions struct {
 func initialize(ctx *glsp.Context, params *protocol.InitializeParams) (any, error) {
 	notify = ctx.Notify
 
-	dir := schemaDirFromOptions(params)
+	cfg := loadConfigFile(params)
+
+	dir := schemaDirFromOptionsWith(params, cfg)
 	if dir == "" {
 		dir = cliDir
 	}
@@ -97,7 +99,7 @@ func initialize(ctx *glsp.Context, params *protocol.InitializeParams) (any, erro
 		loadAndSetSchema(dir)
 		startSchemaWatcher(dir)
 	}
-	setSQLFunctions(sqlFunctionsFromOptions(params))
+	setSQLFunctions(sqlFunctionsFromOptionsWith(params, cfg))
 
 	caps := handler.CreateServerCapabilities()
 	caps.CompletionProvider = &protocol.CompletionOptions{
@@ -117,6 +119,41 @@ func initialize(ctx *glsp.Context, params *protocol.InitializeParams) (any, erro
 	}, nil
 }
 
+// configFile mirrors the JSON shape of `.pgls.json`. SQLFunctions is a
+// pointer so we can distinguish "explicitly empty" (opt out of
+// function-call detection) from "field omitted" (use defaults).
+type configFile struct {
+	SchemaDir    string    `json:"schemaDir"`
+	SQLFunctions *[]string `json:"sqlFunctions"`
+}
+
+// loadConfigFile reads `.pgls.json` from the workspace root and
+// returns its parsed contents, or nil if the workspace root is unknown,
+// the file is missing, or parsing fails. Read and parse errors (other
+// than ENOENT) are logged. Callers cache the returned value across the
+// initialize handshake so we don't read the file twice and can't pick
+// up a half-written edit between reads.
+func loadConfigFile(params *protocol.InitializeParams) *configFile {
+	root := workspaceRoot(params)
+	if root == "" {
+		return nil
+	}
+	path := filepath.Join(root, ".pgls.json")
+	b, err := os.ReadFile(path)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			log.Printf("read %s: %v", path, err)
+		}
+		return nil
+	}
+	var cfg configFile
+	if err := json.Unmarshal(b, &cfg); err != nil {
+		log.Printf("parse %s: %v", path, err)
+		return nil
+	}
+	return &cfg
+}
+
 // schemaDirFromOptions resolves the schema directory. A project-local
 // .pgls.json at the workspace root wins over LSP initializationOptions
 // — the config file is committed alongside the code, so it's the
@@ -125,7 +162,11 @@ func initialize(ctx *glsp.Context, params *protocol.InitializeParams) (any, erro
 // present. Returning "" leaves the caller to fall back to the CLI
 // flag (or to leave the schema unloaded).
 func schemaDirFromOptions(params *protocol.InitializeParams) string {
-	if dir := schemaDirFromConfigFile(params); dir != "" {
+	return schemaDirFromOptionsWith(params, loadConfigFile(params))
+}
+
+func schemaDirFromOptionsWith(params *protocol.InitializeParams, cfg *configFile) string {
+	if dir := schemaDirFromConfigFile(params, cfg); dir != "" {
 		return dir
 	}
 	return schemaDirFromInitOptions(params)
@@ -146,39 +187,21 @@ func schemaDirFromInitOptions(params *protocol.InitializeParams) string {
 	return resolveSchemaDir(opts.SchemaDir, workspaceRoot(params))
 }
 
-// schemaDirFromConfigFile looks for `.pgls.json` at the workspace root
-// and parses its `schemaDir` field. Editors that don't have a clean way
-// to pass initializationOptions (classic Vim, plain CLI usage) can drop
-// this file in the project so pgls picks it up automatically.
-//
-// Because the config file is checked into the repository, the
+// schemaDirFromConfigFile validates and resolves the schemaDir from a
+// pre-loaded `.pgls.json`. Returns "" when cfg is nil or the field is
+// unset. Because the config file is checked into the repository, the
 // schemaDir it carries is constrained to a path inside the workspace
 // — absolute paths and ".." escapes are rejected so an unfamiliar
 // repo can't make pgls walk and surface arbitrary `.sql` files
 // elsewhere on disk. The CLI flag and initializationOptions paths
-// stay unrestricted because the user (or their editor config)
-// supplies them explicitly.
-func schemaDirFromConfigFile(params *protocol.InitializeParams) string {
+// stay unrestricted because the user (or their editor config) supplies
+// them explicitly.
+func schemaDirFromConfigFile(params *protocol.InitializeParams, cfg *configFile) string {
+	if cfg == nil || cfg.SchemaDir == "" {
+		return ""
+	}
 	root := workspaceRoot(params)
-	if root == "" {
-		return ""
-	}
 	path := filepath.Join(root, ".pgls.json")
-	b, err := os.ReadFile(path)
-	if err != nil {
-		if !os.IsNotExist(err) {
-			log.Printf("read %s: %v", path, err)
-		}
-		return ""
-	}
-	var cfg initOptions
-	if err := json.Unmarshal(b, &cfg); err != nil {
-		log.Printf("parse %s: %v", path, err)
-		return ""
-	}
-	if cfg.SchemaDir == "" {
-		return ""
-	}
 	if filepath.IsAbs(cfg.SchemaDir) {
 		log.Printf("%s: absolute schemaDir %q rejected (must be inside workspace)", path, cfg.SchemaDir)
 		return ""
@@ -213,8 +236,12 @@ func resolveSchemaDir(dir, root string) string {
 // The returned slice may be empty; an explicit empty array opts out of
 // function-call detection so only the language=sql marker fires.
 func sqlFunctionsFromOptions(params *protocol.InitializeParams) []string {
-	if fns, ok := sqlFunctionsFromConfigFile(params); ok {
-		return fns
+	return sqlFunctionsFromOptionsWith(params, loadConfigFile(params))
+}
+
+func sqlFunctionsFromOptionsWith(params *protocol.InitializeParams, cfg *configFile) []string {
+	if cfg != nil && cfg.SQLFunctions != nil {
+		return *cfg.SQLFunctions
 	}
 	if fns, ok := sqlFunctionsFromInitOptions(params); ok {
 		return fns
@@ -242,31 +269,6 @@ func sqlFunctionsFromInitOptions(params *protocol.InitializeParams) ([]string, b
 	return *raw.SQLFunctions, true
 }
 
-func sqlFunctionsFromConfigFile(params *protocol.InitializeParams) ([]string, bool) {
-	root := workspaceRoot(params)
-	if root == "" {
-		return nil, false
-	}
-	path := filepath.Join(root, ".pgls.json")
-	b, err := os.ReadFile(path)
-	if err != nil {
-		if !os.IsNotExist(err) {
-			log.Printf("read %s: %v", path, err)
-		}
-		return nil, false
-	}
-	var raw struct {
-		SQLFunctions *[]string `json:"sqlFunctions"`
-	}
-	if err := json.Unmarshal(b, &raw); err != nil {
-		log.Printf("parse %s: %v", path, err)
-		return nil, false
-	}
-	if raw.SQLFunctions == nil {
-		return nil, false
-	}
-	return *raw.SQLFunctions, true
-}
 
 // setSQLFunctions installs the active SQL-function set. A nil argument
 // reverts to DefaultSQLFunctions; otherwise the caller's slice is used

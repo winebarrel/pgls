@@ -190,25 +190,6 @@ func TestLoadConfigFile_ReadErrorShowsError(t *testing.T) {
 	assert.Contains(t, p.Message, "failed to read")
 }
 
-func TestLoadConfigFile_TrailingDataShowsError(t *testing.T) {
-	// `{...}\n{...}` is not valid pgls config — the JSON decoder will
-	// happily decode the first object and ignore the rest, so without
-	// an explicit trailing-data check the second config silently wins
-	// or is silently lost. decodeConfig requires io.EOF after the
-	// first value, surfacing the issue via window/showMessage.
-	root, uri := makeWorkspaceRoot(t)
-	writeConfig(t, root, "{\"schemaDir\": \"db\"}\n{\"schemaDir\": \"other\"}")
-
-	captured := captureNotify(t)
-	require.Nil(t, loadConfigFile(paramsFor(uri, nil)))
-
-	require.Len(t, *captured, 1)
-	p, ok := (*captured)[0].params.(*protocol.ShowMessageParams)
-	require.True(t, ok)
-	assert.Equal(t, protocol.MessageTypeError, p.Type)
-	assert.Contains(t, p.Message, "unexpected data")
-}
-
 func TestInitOptionsConfig_MalformedShowsError(t *testing.T) {
 	// Same idea for editor-supplied initializationOptions — a malformed
 	// payload (e.g. wrong type for sqlFunctions) is reported rather than

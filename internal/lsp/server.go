@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"io"
 	"io/fs"
 	"log"
 	"net/url"
@@ -145,27 +144,15 @@ func initialize(ctx *glsp.Context, params *protocol.InitializeParams) (any, erro
 }
 
 // decodeConfig strictly decodes a JSON payload into a pglsConfig.
-// "Strict" means:
-//   - unknown fields are rejected (a typo like `sqlFunktions` errors
-//     instead of silently dropping the user's intended config), and
-//   - trailing data after the first JSON value is rejected (a stray
-//     second object or accidental concatenation doesn't get silently
-//     ignored).
+// "Strict" means: unknown fields are rejected — a typo like
+// `sqlFunktions` errors instead of silently dropping the user's
+// intended config.
 func decodeConfig(b []byte) (*pglsConfig, error) {
 	dec := json.NewDecoder(bytes.NewReader(b))
 	dec.DisallowUnknownFields()
 	var cfg pglsConfig
 	if err := dec.Decode(&cfg); err != nil {
 		return nil, err
-	}
-	if err := dec.Decode(&struct{}{}); err != io.EOF {
-		// err here describes what the trailing bytes look like (a
-		// stray array, a malformed token, etc.) and is the most
-		// useful diagnostic we have. Wrap rather than discard.
-		if err == nil {
-			return nil, fmt.Errorf("unexpected data after JSON value")
-		}
-		return nil, fmt.Errorf("unexpected data after JSON value: %w", err)
 	}
 	return &cfg, nil
 }

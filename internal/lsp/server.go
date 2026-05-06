@@ -23,10 +23,12 @@ import (
 	"github.com/winebarrel/pgls/schema"
 )
 
-const (
-	name    = "pgls"
-	version = "0.0.1"
-)
+const name = "pgls"
+
+// version is overridden via -ldflags at build time. The source default
+// is what `go install` and a plain `go build` produce; goreleaser
+// stamps it with the tag (e.g. "1.0.0") on releases.
+var version = "dev"
 
 var (
 	handler protocol.Handler

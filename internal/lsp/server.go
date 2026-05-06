@@ -42,9 +42,16 @@ var (
 
 	notify glsp.NotifyFunc
 
-	cliDir       string
-	watcherOnce  sync.Once
-	watcherStart sync.Mutex // serializes attempts to (re)configure the watcher
+	cliDir string
+
+	// watcherMu guards watcherStarted. We use a manual flag rather
+	// than sync.Once because Once treats any callback return — even
+	// an early-return on failure — as "done", which would
+	// permanently disable the watcher if e.g. the schema directory
+	// didn't exist at first call. With this layout each call is a
+	// retry until one actually launches the goroutine.
+	watcherMu      sync.Mutex
+	watcherStarted bool
 
 	// publishMu serializes publishDiagnostics so that the notification
 	// stream stays in sequence even when didChange fans out across
@@ -414,26 +421,30 @@ func loadAndSetSchema(dir string) {
 
 // startSchemaWatcher launches a single fsnotify-based watcher on dir
 // that reloads the schema and republishes diagnostics when any .sql
-// file changes. It is a no-op on subsequent calls — the watcher is
-// established only once per process.
+// file changes. It is a no-op once a watcher has been successfully
+// installed; failures are retried on subsequent calls so a missing
+// schema directory at first call doesn't permanently disable hot
+// reload.
 func startSchemaWatcher(dir string) {
-	watcherOnce.Do(func() {
-		watcherStart.Lock()
-		defer watcherStart.Unlock()
+	watcherMu.Lock()
+	defer watcherMu.Unlock()
+	if watcherStarted {
+		return
+	}
 
-		w, err := fsnotify.NewWatcher()
-		if err != nil {
-			log.Printf("schema watcher: %v", err)
-			return
-		}
-		if err := addDirsRecursively(w, dir); err != nil {
-			log.Printf("schema watcher add %q: %v", dir, err)
-			w.Close() //nolint:errcheck
-			return
-		}
+	w, err := fsnotify.NewWatcher()
+	if err != nil {
+		log.Printf("schema watcher: %v", err)
+		return
+	}
+	if err := addDirsRecursively(w, dir); err != nil {
+		log.Printf("schema watcher add %q: %v", dir, err)
+		w.Close() //nolint:errcheck
+		return
+	}
 
-		go runWatcher(w, dir)
-	})
+	go runWatcher(w, dir)
+	watcherStarted = true
 }
 
 func addDirsRecursively(w *fsnotify.Watcher, root string) error {

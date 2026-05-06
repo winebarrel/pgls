@@ -76,10 +76,15 @@ func Lint(sql string, s Schema) []Issue {
 			if prev2 != nil && isIdent(prev2.text) && !stopWords[strings.ToUpper(prev2.text)] {
 				// `FROM/JOIN/INTO/UPDATE schema.table` — the right
 				// side is a bare table reference, not a qualified
-				// column. Validate it as a table.
+				// column. Validate it as a real schema table; do
+				// NOT exempt virtual names (CTE / subquery
+				// aliases) the way the bare-table branch does,
+				// since PostgreSQL doesn't allow schema-qualifying
+				// a CTE reference and silently accepting it would
+				// hide a typo.
 				prev3 := tokenPtr(tokens, i-3)
 				if prev3 != nil && isFromKeyword(prev3.text) {
-					if !s.HasTable(t.text) && !info.virtual[t.text] {
+					if !s.HasTable(t.text) {
 						issues = append(issues, Issue{
 							Start:   t.start,
 							End:     t.end,

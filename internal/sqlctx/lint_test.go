@@ -114,6 +114,19 @@ func TestLint_SchemaQualifiedKnownTable(t *testing.T) {
 	}
 }
 
+func TestLint_SchemaQualifiedCTENameStillFlagged(t *testing.T) {
+	// PostgreSQL doesn't let you schema-qualify a CTE reference: the
+	// CTE namespace is separate from the schema-qualified table
+	// namespace. So `FROM public.active` where `active` is only a
+	// CTE must still be flagged as unknown — even though the
+	// bare-table branch would accept `FROM active` here.
+	s := makeSchema()
+	got := Lint(`WITH active AS (SELECT 1) SELECT * FROM public.active`, s)
+	if len(got) != 1 || !strings.Contains(got[0].Message, "active") {
+		t.Errorf("got %v", issueMessages(got))
+	}
+}
+
 func TestLint_JoinUnknown(t *testing.T) {
 	s := makeSchema()
 	issues := Lint("SELECT * FROM users JOIN nope ON 1=1", s)

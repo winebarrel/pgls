@@ -25,7 +25,7 @@ are produced for darwin / linux / windows × amd64 / arm64.
 Requires Go 1.25 or later:
 
 ```sh
-go install github.com/winebarrel/pgls@v0.3.1
+go install github.com/winebarrel/pgls@v0.4.0
 ```
 
 ## Quickstart

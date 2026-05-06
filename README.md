@@ -119,9 +119,11 @@ language-servers = ["pgls"]
 
 ### VSCode
 
-Install the [pgls-vscode](https://github.com/winebarrel/pgls-vscode)
-extension. It spawns the `pgls` binary on `.go` and `.sql` files;
-configure the schema directory per-workspace in `.vscode/settings.json`:
+Install [pgls](https://marketplace.visualstudio.com/items?itemName=winebarrel.pgls)
+from the VS Code Marketplace
+([source](https://github.com/winebarrel/pgls-vscode)). The extension
+spawns the `pgls` binary on `.go` and `.sql` files; configure the
+schema directory per-workspace in `.vscode/settings.json`:
 
 ```json
 { "pgls.schemaDir": "db/schema" }

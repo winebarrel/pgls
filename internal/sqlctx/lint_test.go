@@ -96,6 +96,30 @@ func TestLint_SchemaQualifiedUnknownTable(t *testing.T) {
 	}
 }
 
+func TestLint_SchemaQualifiedAcrossKeywords(t *testing.T) {
+	// FROM/JOIN/UPDATE share isFromKeyword in the schema-qualified
+	// branch, so they should behave identically. Pin examples for
+	// keywords other than FROM (already covered above) so a future
+	// per-keyword change can't silently regress.
+	//
+	// INSERT INTO is intentionally absent: pgls's linear walker
+	// treats `ident(` as a function call before the table check
+	// even runs, so `INSERT INTO public.bogus (id) VALUES ...` is a
+	// pre-existing blind spot for bare and schema-qualified alike.
+	// That's a separate scope.
+	s := makeSchema()
+	cases := []string{
+		`SELECT * FROM users JOIN public.bogus ON 1=1`,
+		`UPDATE public.bogus SET id = 1`,
+	}
+	for _, sql := range cases {
+		got := Lint(sql, s)
+		if len(got) != 1 || !strings.Contains(got[0].Message, "bogus") {
+			t.Errorf("%q: got %v", sql, issueMessages(got))
+		}
+	}
+}
+
 func TestLint_SchemaQualifiedKnownTable(t *testing.T) {
 	// `FROM public.users` where both "public" (a table) and "users" (a
 	// table) exist in the schema must NOT produce

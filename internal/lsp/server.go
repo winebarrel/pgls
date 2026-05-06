@@ -620,7 +620,10 @@ func symbolTarget(s *schema.Schema, sym sqlctx.Symbol, aliases map[string]string
 	if pos == nil || pos.Path == "" {
 		return ""
 	}
-	return "file://" + pos.Path
+	// VSCode honours a `#L<line>` fragment on file:// URIs to open at
+	// a specific line. Line numbers in the fragment are 1-indexed,
+	// while LSP positions are 0-indexed.
+	return fmt.Sprintf("file://%s#L%d", pos.Path, pos.Line+1)
 }
 
 func definition(_ *glsp.Context, params *protocol.DefinitionParams) (any, error) {

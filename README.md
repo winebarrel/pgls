@@ -45,6 +45,40 @@ vim.lsp.start({
 })
 ```
 
+### Vim (with [vim-lsp](https://github.com/prabirshrestha/vim-lsp))
+
+```vim
+if executable('pgls')
+  augroup pgls_register
+    autocmd!
+    autocmd User lsp_setup call lsp#register_server({
+      \ 'name': 'pgls',
+      \ 'cmd': {server_info -> ['pgls']},
+      \ 'allowlist': ['go', 'sql'],
+      \ 'initialization_options': { 'schemaDir': 'db/schema' },
+      \ 'root_uri': {server_info -> lsp#utils#path_to_uri(
+      \   lsp#utils#find_nearest_parent_file_directory(
+      \     lsp#utils#get_buffer_path(), ['.git/', 'go.mod']))},
+      \ })
+  augroup END
+endif
+```
+
+For `coc.nvim` add an entry to `:CocConfig`:
+
+```json
+{
+  "languageserver": {
+    "pgls": {
+      "command": "pgls",
+      "filetypes": ["go", "sql"],
+      "rootPatterns": ["go.mod", ".git/"],
+      "initializationOptions": { "schemaDir": "db/schema" }
+    }
+  }
+}
+```
+
 ### Helix (`languages.toml`)
 
 ```toml

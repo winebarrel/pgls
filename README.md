@@ -9,6 +9,8 @@ Schema is read from a directory of `CREATE TABLE` files using
 [wasilibs/go-pgquery](https://github.com/wasilibs/go-pgquery), so no
 CGO is required).
 
+<img src="https://github.com/user-attachments/assets/f5334ec5-f3d7-427b-aee3-2d0be91347df" />
+
 ## Install
 
 ```sh

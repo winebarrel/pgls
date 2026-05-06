@@ -542,25 +542,47 @@ func documentLink(_ *glsp.Context, params *protocol.DocumentLinkParams) ([]proto
 	src := []byte(text)
 
 	links := []protocol.DocumentLink{}
+	addLink := func(startB, endB int, target string) {
+		sLine, sChar := posenc.ByteToLSP(src, startB)
+		eLine, eChar := posenc.ByteToLSP(src, endB)
+		t := target
+		links = append(links, protocol.DocumentLink{
+			Range: protocol.Range{
+				Start: protocol.Position{Line: uint32(sLine), Character: uint32(sChar)},
+				End:   protocol.Position{Line: uint32(eLine), Character: uint32(eChar)},
+			},
+			Target: &t,
+		})
+	}
 	appendBlock := func(sql string, baseByte int) {
 		symbols, aliases, _ := sqlctx.WalkSymbols(sql)
-		for _, sym := range symbols {
-			target := symbolTarget(sch, sym, aliases)
-			if target == "" {
-				continue
+		for i := 0; i < len(symbols); i++ {
+			sym := symbols[i]
+			// Pair "X" (qualifier) with the immediately following
+			// QualifiedColumn so the dot between them is covered by a
+			// single contiguous link — VSCode draws one underline per
+			// link, so two adjacent links render as a visual gap on
+			// the "." character.
+			if sym.Kind == sqlctx.SymbolQualifier && i+1 < len(symbols) {
+				next := symbols[i+1]
+				if next.Kind == sqlctx.SymbolQualifiedColumn && next.Qualifier == sym.Name {
+					qt := symbolTarget(sch, sym, aliases)
+					ct := symbolTarget(sch, next, aliases)
+					switch {
+					case ct != "":
+						// Prefer the column position when it resolves
+						// — more useful as a destination.
+						addLink(baseByte+sym.Start, baseByte+next.End, ct)
+					case qt != "":
+						addLink(baseByte+sym.Start, baseByte+sym.End, qt)
+					}
+					i++ // skip the column we just consumed
+					continue
+				}
 			}
-			startB := baseByte + sym.Start
-			endB := baseByte + sym.End
-			sLine, sChar := posenc.ByteToLSP(src, startB)
-			eLine, eChar := posenc.ByteToLSP(src, endB)
-			t := target
-			links = append(links, protocol.DocumentLink{
-				Range: protocol.Range{
-					Start: protocol.Position{Line: uint32(sLine), Character: uint32(sChar)},
-					End:   protocol.Position{Line: uint32(eLine), Character: uint32(eChar)},
-				},
-				Target: &t,
-			})
+			if target := symbolTarget(sch, sym, aliases); target != "" {
+				addLink(baseByte+sym.Start, baseByte+sym.End, target)
+			}
 		}
 	}
 	if strings.HasSuffix(uri, ".go") {

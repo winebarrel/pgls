@@ -165,14 +165,20 @@ func TestLoadConfigFile_ReadErrorShowsError(t *testing.T) {
 	// `.pgls.json` exists but pgls can't read it (here: no read
 	// permission). Without a window/showMessage the editor user sees
 	// pgls quietly do nothing and has no idea config was skipped.
-	if os.Geteuid() == 0 {
-		t.Skip("running as root: chmod 0 doesn't block reads, can't simulate")
-	}
 	root, uri := makeWorkspaceRoot(t)
 	path := filepath.Join(root, ".pgls.json")
 	require.NoError(t, os.WriteFile(path, []byte(`{}`), 0o644))
 	require.NoError(t, os.Chmod(path, 0))
 	t.Cleanup(func() { _ = os.Chmod(path, 0o644) })
+
+	// Some environments don't honour `chmod 0` for the current
+	// process — root on Unix, Windows in general, and a few exotic
+	// filesystems. Probe the same way pgls will and skip if reads
+	// still succeed; otherwise the test asserts behavior that
+	// can't actually trigger here.
+	if _, err := os.ReadFile(path); err == nil {
+		t.Skip("chmod 0 didn't block reads on this platform; can't simulate a read failure")
+	}
 
 	captured := captureNotify(t)
 	require.Nil(t, loadConfigFile(paramsFor(uri, nil)))

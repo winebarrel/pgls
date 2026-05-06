@@ -146,7 +146,7 @@ func main(db *sql.DB) {
 `)
 	sql, off, ok := FindSQL(src, line, char, DefaultSQLFunctions())
 	if !ok {
-		t.Fatal("want ok=true; db.Query arg should be recognised")
+		t.Fatal("want ok=true; db.Query arg should be recognized")
 	}
 	if got := sql[:off]; got != "SELECT id" {
 		t.Errorf("sql[:off]=%q, want %q", got, "SELECT id")

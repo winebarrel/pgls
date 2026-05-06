@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"io/fs"
 	"log"
 	"net/url"
@@ -83,7 +84,7 @@ func Run(cliSchemaDir string) error {
 }
 
 // pglsConfig is the JSON shape of pgls's user-supplied configuration.
-// It carries every recognised field, and is used as-is for both the
+// It carries every recognized field, and is used as-is for both the
 // `.pgls.json` workspace file and the LSP `initializationOptions`
 // payload — same shape, same validation rules. SQLFunctions is a
 // pointer so callers can distinguish "explicitly empty" (opt out of
@@ -138,15 +139,21 @@ func initialize(ctx *glsp.Context, params *protocol.InitializeParams) (any, erro
 }
 
 // decodeConfig strictly decodes a JSON payload into a pglsConfig.
-// "Strict" means: unknown fields are rejected — a typo like
-// `sqlFunktions` would otherwise be silently dropped, leaving the
-// user with a config that "doesn't work" and no obvious reason why.
+// "Strict" means:
+//   - unknown fields are rejected (a typo like `sqlFunktions` errors
+//     instead of silently dropping the user's intended config), and
+//   - trailing data after the first JSON value is rejected (a stray
+//     second object or accidental concatenation doesn't get silently
+//     ignored).
 func decodeConfig(b []byte) (*pglsConfig, error) {
 	dec := json.NewDecoder(bytes.NewReader(b))
 	dec.DisallowUnknownFields()
 	var cfg pglsConfig
 	if err := dec.Decode(&cfg); err != nil {
 		return nil, err
+	}
+	if err := dec.Decode(&struct{}{}); err != io.EOF {
+		return nil, fmt.Errorf("unexpected data after JSON value")
 	}
 	return &cfg, nil
 }

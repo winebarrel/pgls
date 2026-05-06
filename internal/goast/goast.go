@@ -42,7 +42,7 @@ func DefaultSQLFunctions() SQLFunctions {
 }
 
 // FindAllSQL returns every string literal in src that should be
-// treated as SQL, recognised by either:
+// treated as SQL, recognized by either:
 //   - a JetBrains-style `language=sql` / `language=postgresql` marker
 //     comment on the line directly above, or
 //   - being passed as an argument to a function/method whose name
@@ -173,7 +173,7 @@ func parseWithMarkers(src []byte) (*token.FileSet, *ast.File, map[token.Pos]bool
 }
 
 // callSQLPositions returns the set of string-literal positions that
-// occupy the configured query slot of a call to a recognised SQL
+// occupy the configured query slot of a call to a recognized SQL
 // function. Only the slot named in funcs is examined — a parameter
 // literal in a different position (e.g. `db.Exec(query, "value")` or
 // `db.QueryContext(ctx, q, "value")`) is never misread as SQL.

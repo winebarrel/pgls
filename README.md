@@ -182,7 +182,7 @@ schema directory per-workspace in `.vscode/settings.json`:
   1. It carries a JetBrains-style `language=sql` (or
      `language=postgresql`) marker comment on the line directly above.
      Block-comment form (`/* language=sql */`) and any case works.
-  2. It's passed to a recognised SQL method. Defaults cover
+  2. It's passed to a recognized SQL method. Defaults cover
      `database/sql` (`Query`, `QueryRow`, `QueryContext`,
      `QueryRowContext`, `Exec`, `ExecContext`, `Prepare`,
      `PrepareContext`); override with `sqlFunctions` in `.pgls.json`

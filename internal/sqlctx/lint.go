@@ -52,8 +52,17 @@ func Lint(sql string, s Schema) []Issue {
 
 		// Identifier acting as a qualifier ("X." part).
 		if next != nil && next.text == "." {
-			// "FROM public.users" — treat as schema name, validate at the next ident.
+			// `FROM/JOIN/INTO/UPDATE schema.table` — schema name,
+			// validate at the next ident.
 			if prev != nil && isFromKeyword(prev.text) {
+				continue
+			}
+			// `CREATE/ALTER/DROP TABLE schema.table` — DDL target,
+			// not a reference. The schema name shouldn't be looked
+			// up against the loaded schema (the table is being
+			// defined / altered / dropped, the schema name is just
+			// part of the fully-qualified identifier).
+			if prev != nil && strings.EqualFold(prev.text, "TABLE") {
 				continue
 			}
 			if _, ok := aliases[t.text]; ok {

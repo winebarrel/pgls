@@ -3,6 +3,8 @@ package sqlctx
 import (
 	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
 )
 
 type fakeSchema struct {
@@ -93,6 +95,22 @@ func TestLint_SchemaQualifiedUnknownTable(t *testing.T) {
 	issues := Lint("SELECT * FROM public.bogus", s)
 	if len(issues) != 1 || !strings.Contains(issues[0].Message, "bogus") {
 		t.Fatalf("got %v", issueMessages(issues))
+	}
+}
+
+func TestLint_DDLTableSchemaQualifier(t *testing.T) {
+	// CREATE/ALTER/DROP TABLE schema.table — the schema name in the
+	// DDL target must not be flagged. Without this exemption the
+	// qualifier branch would say `unknown table or alias "public"`
+	// because `public` is neither a table nor a registered alias.
+	s := makeSchema()
+	cases := []string{
+		`CREATE TABLE public.users (id bigint PRIMARY KEY)`,
+		`ALTER TABLE public.users ADD COLUMN x int`,
+		`DROP TABLE public.users`,
+	}
+	for _, sql := range cases {
+		assert.Empty(t, Lint(sql, s), "%q: should not flag schema name in DDL target", sql)
 	}
 }
 

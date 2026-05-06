@@ -117,22 +117,29 @@ func TestSQLFunctions_NotConfiguredReturnsNil(t *testing.T) {
 
 func TestSQLFunctions_FromInitOptions(t *testing.T) {
 	_, uri := makeWorkspaceRoot(t)
-	got := sqlFunctionsFromOptions(paramsFor(uri, map[string]any{"sqlFunctions": []string{"Foo", "Bar"}}))
-	assert.Equal(t, []string{"Foo", "Bar"}, got)
+	got := sqlFunctionsFromOptions(paramsFor(uri, map[string]any{
+		"sqlFunctions": []map[string]any{
+			{"name": "Foo", "argIndex": 0},
+			{"name": "Bar", "argIndex": 1},
+		},
+	}))
+	assert.Equal(t, []sqlFunctionEntry{{Name: "Foo", ArgIndex: 0}, {Name: "Bar", ArgIndex: 1}}, got)
 }
 
 func TestSQLFunctions_EmptyArrayDisables(t *testing.T) {
 	_, uri := makeWorkspaceRoot(t)
-	got := sqlFunctionsFromOptions(paramsFor(uri, map[string]any{"sqlFunctions": []string{}}))
+	got := sqlFunctionsFromOptions(paramsFor(uri, map[string]any{"sqlFunctions": []any{}}))
 	assert.NotNil(t, got, "explicit empty array must be returned, not nil — that opts out of function-call detection")
 	assert.Empty(t, got)
 }
 
 func TestSQLFunctions_ConfigFileBeatsInitOptions(t *testing.T) {
 	root, uri := makeWorkspaceRoot(t)
-	writeConfig(t, root, `{"sqlFunctions": ["FromFile"]}`)
-	got := sqlFunctionsFromOptions(paramsFor(uri, map[string]any{"sqlFunctions": []string{"FromInit"}}))
-	assert.Equal(t, []string{"FromFile"}, got)
+	writeConfig(t, root, `{"sqlFunctions": [{"name": "FromFile", "argIndex": 0}]}`)
+	got := sqlFunctionsFromOptions(paramsFor(uri, map[string]any{
+		"sqlFunctions": []map[string]any{{"name": "FromInit", "argIndex": 0}},
+	}))
+	assert.Equal(t, []sqlFunctionEntry{{Name: "FromFile", ArgIndex: 0}}, got)
 }
 
 func TestSchemaDir_EmptyConfigSchemaDir(t *testing.T) {

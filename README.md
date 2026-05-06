@@ -51,15 +51,25 @@ pgls will pick it up automatically:
 ```json
 {
   "schemaDir": "db/schema",
-  "sqlFunctions": ["Query", "QueryRow", "Exec", "Get", "Select"]
+  "sqlFunctions": [
+    { "name": "Query",        "argIndex": 0 },
+    { "name": "QueryContext", "argIndex": 1 },
+    { "name": "Get",          "argIndex": 1 },
+    { "name": "Select",       "argIndex": 1 }
+  ]
 }
 ```
 
+Each entry names a Go function or method (matched by selector, no
+type resolution) and `argIndex` (0-origin) tells pgls which positional
+argument carries the SQL string. Method names are matched without a
+receiver, so `"Query"` covers `db.Query`, `tx.Query`, `*sql.DB.Query`
+all together.
+
 `sqlFunctions` is optional; omit it to inherit the default
-`database/sql` method names (`Query`, `QueryRow`, `QueryContext`,
-`QueryRowContext`, `Exec`, `ExecContext`, `Prepare`, `PrepareContext`).
-An explicit empty array disables function-call detection so only
-marker comments fire.
+`database/sql` set (`Query`, `QueryRow`, `Exec`, `Prepare` at
+arg 0, plus their `*Context` variants at arg 1). An explicit empty
+array disables function-call detection so only marker comments fire.
 
 `.pgls.json` is the project's authoritative schema location and
 wins over `initializationOptions` when both are present —
@@ -171,7 +181,7 @@ schema directory per-workspace in `.vscode/settings.json`:
   SQL when one of:
   1. It carries a JetBrains-style `language=sql` (or
      `language=postgresql`) marker comment on the line directly above.
-     Block-comment form (`/* language=sql */`) and any case work.
+     Block-comment form (`/* language=sql */`) and any case works.
   2. It's passed to a recognised SQL method. Defaults cover
      `database/sql` (`Query`, `QueryRow`, `QueryContext`,
      `QueryRowContext`, `Exec`, `ExecContext`, `Prepare`,

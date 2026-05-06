@@ -82,8 +82,16 @@ func Run(cliSchemaDir string) error {
 }
 
 type initOptions struct {
-	SchemaDir    string   `json:"schemaDir"`
-	SQLFunctions []string `json:"sqlFunctions"`
+	SchemaDir    string             `json:"schemaDir"`
+	SQLFunctions []sqlFunctionEntry `json:"sqlFunctions"`
+}
+
+// sqlFunctionEntry is the JSON shape of one entry in the sqlFunctions
+// list. Name is matched against call expressions by selector, ArgIndex
+// is the 0-indexed positional argument that holds the SQL string.
+type sqlFunctionEntry struct {
+	Name     string `json:"name"`
+	ArgIndex int    `json:"argIndex"`
 }
 
 func initialize(ctx *glsp.Context, params *protocol.InitializeParams) (any, error) {
@@ -123,8 +131,8 @@ func initialize(ctx *glsp.Context, params *protocol.InitializeParams) (any, erro
 // pointer so we can distinguish "explicitly empty" (opt out of
 // function-call detection) from "field omitted" (use defaults).
 type configFile struct {
-	SchemaDir    string    `json:"schemaDir"`
-	SQLFunctions *[]string `json:"sqlFunctions"`
+	SchemaDir    string              `json:"schemaDir"`
+	SQLFunctions *[]sqlFunctionEntry `json:"sqlFunctions"`
 }
 
 // loadConfigFile reads `.pgls.json` from the workspace root and
@@ -235,11 +243,11 @@ func resolveSchemaDir(dir, root string) string {
 //
 // The returned slice may be empty; an explicit empty array opts out of
 // function-call detection so only the language=sql marker fires.
-func sqlFunctionsFromOptions(params *protocol.InitializeParams) []string {
+func sqlFunctionsFromOptions(params *protocol.InitializeParams) []sqlFunctionEntry {
 	return sqlFunctionsFromOptionsWith(params, loadConfigFile(params))
 }
 
-func sqlFunctionsFromOptionsWith(params *protocol.InitializeParams, cfg *configFile) []string {
+func sqlFunctionsFromOptionsWith(params *protocol.InitializeParams, cfg *configFile) []sqlFunctionEntry {
 	if cfg != nil && cfg.SQLFunctions != nil {
 		return *cfg.SQLFunctions
 	}
@@ -249,7 +257,7 @@ func sqlFunctionsFromOptionsWith(params *protocol.InitializeParams, cfg *configF
 	return nil
 }
 
-func sqlFunctionsFromInitOptions(params *protocol.InitializeParams) ([]string, bool) {
+func sqlFunctionsFromInitOptions(params *protocol.InitializeParams) ([]sqlFunctionEntry, bool) {
 	if params.InitializationOptions == nil {
 		return nil, false
 	}
@@ -258,7 +266,7 @@ func sqlFunctionsFromInitOptions(params *protocol.InitializeParams) ([]string, b
 		return nil, false
 	}
 	var raw struct {
-		SQLFunctions *[]string `json:"sqlFunctions"`
+		SQLFunctions *[]sqlFunctionEntry `json:"sqlFunctions"`
 	}
 	if err := json.Unmarshal(b, &raw); err != nil {
 		return nil, false
@@ -274,7 +282,7 @@ func sqlFunctionsFromInitOptions(params *protocol.InitializeParams) ([]string, b
 // reverts to DefaultSQLFunctions; otherwise the caller's slice is used
 // verbatim — an empty slice disables function-call detection so only
 // the language=sql marker comment fires.
-func setSQLFunctions(funcs []string) {
+func setSQLFunctions(funcs []sqlFunctionEntry) {
 	sqlFuncsMu.Lock()
 	defer sqlFuncsMu.Unlock()
 	if funcs == nil {
@@ -282,8 +290,11 @@ func setSQLFunctions(funcs []string) {
 		return
 	}
 	set := make(goast.SQLFunctions, len(funcs))
-	for _, n := range funcs {
-		set[n] = true
+	for _, e := range funcs {
+		if e.Name == "" || e.ArgIndex < 0 {
+			continue
+		}
+		set[e.Name] = e.ArgIndex
 	}
 	loadedSQLFuncs = set
 }

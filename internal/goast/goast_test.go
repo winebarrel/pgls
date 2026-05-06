@@ -181,10 +181,10 @@ func somethingElse(s string) string { return s }
 	}
 }
 
-func TestFindSQL_OnlyFirstStringLiteralArgIsSQL(t *testing.T) {
-	// Per-Copilot review on PR #12: the second string literal argument
-	// (a parameter value, not SQL) must NOT be flagged as SQL. Only
-	// the first string literal among the call's args counts.
+func TestFindSQL_LiteralValueArgIsNotSQL(t *testing.T) {
+	// db.Exec's second arg is a value bound to $1, not another SQL
+	// fragment; the cursor on the second literal must not enter the
+	// SQL pipeline.
 	src, line, char := cursorAt(t, `package main
 
 import "database/sql"
@@ -195,6 +195,48 @@ func main(db *sql.DB) {
 `)
 	if _, _, ok := FindSQL(src, line, char, DefaultSQLFunctions()); ok {
 		t.Error("want ok=false: the second string literal is a value, not SQL")
+	}
+}
+
+func TestFindSQL_VariableQueryWithLiteralParam(t *testing.T) {
+	// db.QueryContext(ctx, q, "param"): q is a variable so the SQL
+	// slot (arg 1) isn't a literal — "param" sits in arg 2 and must
+	// stay invisible to pgls regardless.
+	src, line, char := cursorAt(t, `package main
+
+import (
+	"context"
+	"database/sql"
+)
+
+func main(ctx context.Context, db *sql.DB, q string) {
+	_, _ = db.QueryContext(ctx, q, "lit<|>eral_param")
+}
+`)
+	if _, _, ok := FindSQL(src, line, char, DefaultSQLFunctions()); ok {
+		t.Error("want ok=false: SQL slot was a non-literal, the literal param mustn't be flagged")
+	}
+}
+
+func TestFindSQL_QueryContextLiteralAtArgOne(t *testing.T) {
+	// Sanity check the *Context variant when the SQL is a literal.
+	src, line, char := cursorAt(t, `package main
+
+import (
+	"context"
+	"database/sql"
+)
+
+func main(ctx context.Context, db *sql.DB) {
+	_, _ = db.QueryContext(ctx, `+"`SELECT id<|> FROM users`"+`)
+}
+`)
+	sql, off, ok := FindSQL(src, line, char, DefaultSQLFunctions())
+	if !ok {
+		t.Fatal("want ok=true: QueryContext arg 1 is the SQL")
+	}
+	if got := sql[:off]; got != "SELECT id" {
+		t.Errorf("sql[:off]=%q, want %q", got, "SELECT id")
 	}
 }
 

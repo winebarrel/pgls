@@ -15,26 +15,32 @@ type SQLString struct {
 	StartByte int // byte offset of the inner SQL within the source
 }
 
-// SQLFunctions is the set of Go function/method names whose string
-// literal arguments are interpreted as SQL. Method names are matched
-// without a receiver, so "Query" matches both `db.Query(...)` and
-// `tx.Query(...)`.
-type SQLFunctions = map[string]bool
+// SQLFunctions maps a Go function or method name to the positional
+// argument index that holds the SQL string. Method names are matched
+// without a receiver, so "Query" matches `db.Query(...)`, `tx.Query(...)`,
+// `*sql.DB.Query(...)` alike.
+//
+// The lsp layer is responsible for resolving "auto" positions
+// (database/sql convention: 1 for *Context variants, 0 otherwise) into
+// the explicit indices stored here, so goast itself can stay a dumb
+// positional lookup.
+type SQLFunctions = map[string]int
 
-// DefaultSQLFunctions returns the database/sql DB / Tx methods that
-// take a query string. Callers can use this verbatim, extend it, or
-// supply their own set entirely (an empty set disables function-call
-// detection so only the language=sql marker comment fires).
+// DefaultSQLFunctions returns database/sql's DB / Tx methods that take
+// a query string, each pointing at the right positional index. Callers
+// can use this verbatim, extend it, or supply their own set; an empty
+// set disables function-call detection so only the language=sql marker
+// fires.
 func DefaultSQLFunctions() SQLFunctions {
 	return SQLFunctions{
-		"Query":            true,
-		"QueryRow":         true,
-		"QueryContext":     true,
-		"QueryRowContext":  true,
-		"Exec":             true,
-		"ExecContext":      true,
-		"Prepare":          true,
-		"PrepareContext":   true,
+		"Query":           0,
+		"QueryRow":        0,
+		"Exec":            0,
+		"Prepare":         0,
+		"QueryContext":    1,
+		"QueryRowContext": 1,
+		"ExecContext":     1,
+		"PrepareContext":  1,
 	}
 }
 
@@ -169,18 +175,11 @@ func parseWithMarkers(src []byte) (*token.FileSet, *ast.File, map[token.Pos]bool
 	return fset, file, marked
 }
 
-// callSQLPositions returns the set of string-literal positions that are
-// passed as the query argument to a call expression whose function name
-// matches funcs. Methods are matched by selector name only ("Query"
-// covers `db.Query(...)`, `tx.Query(...)`, `*sql.DB.Query(...)`).
-//
-// Only the *first* string literal among the call's positional args is
-// flagged. That handles the standard database/sql shape — Query / Exec
-// take the SQL as their first arg, while *Context variants put the
-// context first (a non-literal) and the SQL as the next arg, which is
-// still the first literal seen. The single-literal rule also avoids
-// false positives like `db.Exec("INSERT ...", "literal_value")`, where
-// the second string literal is a parameter value, not SQL.
+// callSQLPositions returns the set of string-literal positions that
+// occupy the configured query slot of a call to a recognised SQL
+// function. Only the slot named in funcs is examined — a parameter
+// literal in a different position (e.g. `db.Exec(query, "value")` or
+// `db.QueryContext(ctx, q, "value")`) is never misread as SQL.
 func callSQLPositions(file *ast.File, funcs SQLFunctions) map[token.Pos]bool {
 	if len(funcs) == 0 {
 		return nil
@@ -192,14 +191,15 @@ func callSQLPositions(file *ast.File, funcs SQLFunctions) map[token.Pos]bool {
 			return true
 		}
 		name := callFuncName(call.Fun)
-		if name == "" || !funcs[name] {
+		if name == "" {
 			return true
 		}
-		for _, arg := range call.Args {
-			if lit, ok := arg.(*ast.BasicLit); ok && lit.Kind == token.STRING {
-				out[lit.Pos()] = true
-				break
-			}
+		idx, ok := funcs[name]
+		if !ok || idx < 0 || idx >= len(call.Args) {
+			return true
+		}
+		if lit, ok := call.Args[idx].(*ast.BasicLit); ok && lit.Kind == token.STRING {
+			out[lit.Pos()] = true
 		}
 		return true
 	})

@@ -302,7 +302,15 @@ func setSQLFunctions(funcs []sqlFunctionEntry) {
 func currentSQLFuncs() goast.SQLFunctions {
 	sqlFuncsMu.RLock()
 	defer sqlFuncsMu.RUnlock()
-	return loadedSQLFuncs
+	// goast.SQLFunctions is a map (reference type); returning the
+	// underlying map would let any caller mutate shared state outside
+	// of sqlFuncsMu. Hand back a fresh copy so each request gets an
+	// independent snapshot.
+	cp := make(goast.SQLFunctions, len(loadedSQLFuncs))
+	for k, v := range loadedSQLFuncs {
+		cp[k] = v
+	}
+	return cp
 }
 
 func workspaceRoot(params *protocol.InitializeParams) string {

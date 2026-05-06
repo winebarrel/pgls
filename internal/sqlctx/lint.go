@@ -31,11 +31,28 @@ type Issue struct {
 // CTE column names, function calls, or values from outer scopes.
 func Lint(sql string, s Schema) []Issue {
 	tokens := tokenize(sql)
-	info := extractTables(tokens)
+	// Use the statement-aware extractor: aliases collected inside a
+	// non-query statement (e.g. CREATE VIEW v AS SELECT ... FROM
+	// users u) must not leak into a later query statement's scope
+	// and silently swallow diagnostics there.
+	info := extractQueryStatementTables(tokens)
 	aliases := info.aliases
+	skip := lintSkipTokens(tokens)
 
 	var issues []Issue
 	for i, t := range tokens {
+		// pgls is a query linter — it only validates statements
+		// whose leading keyword puts them in the SELECT / DML
+		// family (see isQueryLeadingKeyword). Anything else (DDL,
+		// administrative commands, transaction control) is skipped
+		// entirely so e.g. `CREATE TABLE public.users (...)`
+		// doesn't produce a spurious "unknown table" diagnostic on
+		// the schema name. Allow-listing query verbs rather than
+		// blocklisting non-query ones means new DDL keywords stay
+		// safely out of scope without code changes.
+		if skip[i] {
+			continue
+		}
 		if !isIdent(t.text) {
 			continue
 		}
@@ -142,3 +159,35 @@ func tokenPtr(tokens []token, i int) *token {
 	}
 	return &tokens[i]
 }
+
+// lintSkipTokens returns the set of token indices that fall outside
+// any lintable (query) statement, by allow-listing statements whose
+// leading keyword names a query verb. Anything else — DDL, COPY,
+// SET, transaction control, vendor-specific admin commands — is
+// skipped, so e.g. `CREATE TABLE public.users (...)` doesn't trip a
+// spurious diagnostic on its own schema name.
+//
+// We allow-list rather than blocklist because the query verb set is
+// small and stable while DDL gets new verbs over PostgreSQL versions;
+// a missed DDL keyword would re-introduce false positives, while an
+// unrecognised DML form simply isn't validated.
+//
+// Statement boundaries are taken at `;` separators. The final
+// statement may be unterminated.
+func lintSkipTokens(tokens []token) map[int]bool {
+	skip := map[int]bool{}
+	start := 0
+	for i := 0; i <= len(tokens); i++ {
+		if i < len(tokens) && tokens[i].text != ";" {
+			continue
+		}
+		if i > start && !isQueryLeadingKeyword(tokens[start].text) {
+			for j := start; j < i; j++ {
+				skip[j] = true
+			}
+		}
+		start = i + 1
+	}
+	return skip
+}
+

@@ -49,11 +49,30 @@ func TestSchemaDir_ConfigFileFallback(t *testing.T) {
 	assert.Equal(t, filepath.Join(root, "migrations"), got)
 }
 
-func TestSchemaDir_ConfigFileAbsolute(t *testing.T) {
+func TestSchemaDir_ConfigFileRejectsAbsolutePath(t *testing.T) {
+	// .pgls.json is committed to the repo; an absolute schemaDir would
+	// let an unfamiliar workspace walk arbitrary .sql files elsewhere
+	// on the user's disk.
 	root, uri := makeWorkspaceRoot(t)
 	writeConfig(t, root, `{"schemaDir": "/etc/schemas"}`)
 	got := schemaDirFromOptions(paramsFor(uri, nil))
-	assert.Equal(t, "/etc/schemas", got)
+	assert.Equal(t, "", got)
+}
+
+func TestSchemaDir_ConfigFileRejectsParentEscape(t *testing.T) {
+	root, uri := makeWorkspaceRoot(t)
+	writeConfig(t, root, `{"schemaDir": "../outside"}`)
+	got := schemaDirFromOptions(paramsFor(uri, nil))
+	assert.Equal(t, "", got, "../outside should not escape the workspace")
+}
+
+func TestSchemaDir_ConfigFileAcceptsNormalisedRelative(t *testing.T) {
+	// "db/../db/schema" cleans to "db/schema" — fine because it stays
+	// inside the workspace.
+	root, uri := makeWorkspaceRoot(t)
+	writeConfig(t, root, `{"schemaDir": "db/../db/schema"}`)
+	got := schemaDirFromOptions(paramsFor(uri, nil))
+	assert.Equal(t, filepath.Join(root, "db/schema"), got)
 }
 
 func TestSchemaDir_InitOptionsBeatsConfigFile(t *testing.T) {

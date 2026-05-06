@@ -39,7 +39,12 @@ pgls will pick it up automatically:
 { "schemaDir": "db/schema" }
 ```
 
-`initializationOptions` wins when both are present.
+`initializationOptions` wins when both are present. The `schemaDir`
+field of `.pgls.json` must resolve to a path inside the workspace —
+absolute paths and `..` escapes are rejected, so cloning an unfamiliar
+repo can't make pgls walk arbitrary `.sql` files elsewhere on disk.
+The `-schema` CLI flag stays unrestricted because the user supplies
+it explicitly.
 
 ## Editor setup
 

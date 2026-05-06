@@ -139,6 +139,14 @@ func schemaDirFromInitOptions(params *protocol.InitializeParams) string {
 // and parses its `schemaDir` field. Editors that don't have a clean way
 // to pass initializationOptions (classic Vim, plain CLI usage) can drop
 // this file in the project so pgls picks it up automatically.
+//
+// Because the config file is checked into the repository, the
+// schemaDir it carries is constrained to a path inside the workspace
+// — absolute paths and ".." escapes are rejected so an unfamiliar
+// repo can't make pgls walk and surface arbitrary `.sql` files
+// elsewhere on disk. The CLI flag and initializationOptions paths
+// stay unrestricted because the user (or their editor config)
+// supplies them explicitly.
 func schemaDirFromConfigFile(params *protocol.InitializeParams) string {
 	root := workspaceRoot(params)
 	if root == "" {
@@ -157,7 +165,20 @@ func schemaDirFromConfigFile(params *protocol.InitializeParams) string {
 		log.Printf("parse %s: %v", path, err)
 		return ""
 	}
-	return resolveSchemaDir(cfg.SchemaDir, root)
+	if cfg.SchemaDir == "" {
+		return ""
+	}
+	if filepath.IsAbs(cfg.SchemaDir) {
+		log.Printf("%s: absolute schemaDir %q rejected (must be inside workspace)", path, cfg.SchemaDir)
+		return ""
+	}
+	resolved := filepath.Clean(filepath.Join(root, cfg.SchemaDir))
+	cleanRoot := filepath.Clean(root)
+	if resolved != cleanRoot && !strings.HasPrefix(resolved, cleanRoot+string(filepath.Separator)) {
+		log.Printf("%s: schemaDir %q escapes workspace, rejected", path, cfg.SchemaDir)
+		return ""
+	}
+	return resolved
 }
 
 func resolveSchemaDir(dir, root string) string {

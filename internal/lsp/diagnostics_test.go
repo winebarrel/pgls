@@ -18,6 +18,7 @@ func resetState(t *testing.T) {
 	docsMu.Unlock()
 	schemaMu.Lock()
 	loadedSchema = nil
+	loadedSchemaDir = ""
 	schemaMu.Unlock()
 	publishSeqs.Range(func(k, _ any) bool {
 		publishSeqs.Delete(k)

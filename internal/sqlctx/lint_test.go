@@ -224,3 +224,57 @@ func TestLint_FunctionNotFlagged(t *testing.T) {
 		t.Errorf("unexpected: %v", issueMessages(got))
 	}
 }
+
+func TestLint_NonQueryStatementsAreSkipped(t *testing.T) {
+	// pgls's lint allow-lists query verbs (SELECT/INSERT/UPDATE/
+	// DELETE/MERGE/WITH/VALUES/EXPLAIN). Everything else — DDL,
+	// admin commands, etc. — falls through unchecked, which both
+	// avoids spurious diagnostics on schema-defining SQL and
+	// keeps pgls future-proof against new DDL keywords.
+	s := makeSchema()
+	cases := []string{
+		`CREATE TABLE public.users (id bigint PRIMARY KEY)`,
+		`CREATE TABLE IF NOT EXISTS public.users (id int)`,
+		`ALTER TABLE public.users ADD COLUMN x int`,
+		`ALTER TABLE ONLY public.users ADD COLUMN x int`,
+		`DROP TABLE public.users`,
+		`DROP TABLE IF EXISTS public.users`,
+		`TRUNCATE public.users`,
+		`COMMENT ON TABLE public.users IS 'hello'`,
+		`GRANT SELECT ON public.users TO some_role`,
+		// Inner unknown-table inside a DDL body (e.g. CREATE VIEW
+		// AS SELECT ... FROM bogus) is NOT flagged either — accepted
+		// trade-off; pgls focuses on query lint, not DDL lint.
+		`CREATE VIEW v AS SELECT * FROM bogus`,
+		// Vendor-specific / admin verbs not in the allow-list also
+		// get skipped, even though they're not strictly DDL.
+		`SET search_path TO public`,
+		`COPY users FROM '/tmp/file.csv'`,
+	}
+	for _, sql := range cases {
+		if got := Lint(sql, s); len(got) != 0 {
+			t.Errorf("%q: should not flag, got %v", sql, issueMessages(got))
+		}
+	}
+}
+
+func TestLint_QueryAfterNonQueryStillFlagged(t *testing.T) {
+	// In a multi-statement file the allow-list applies per
+	// statement, so a SELECT after a CREATE still gets linted and
+	// surfaces real typos.
+	s := makeSchema()
+	got := Lint(`CREATE TABLE public.foo (id int); SELECT * FROM bogus`, s)
+	if len(got) != 1 || !strings.Contains(got[0].Message, "bogus") {
+		t.Errorf("expected exactly one diagnostic for SELECT after DDL, got %v", issueMessages(got))
+	}
+}
+
+func TestLint_ExplainSelectStillLinted(t *testing.T) {
+	// `EXPLAIN SELECT ...` is in the allow-list, so the inner SELECT
+	// still gets validated.
+	s := makeSchema()
+	got := Lint(`EXPLAIN SELECT * FROM bogus`, s)
+	if len(got) != 1 || !strings.Contains(got[0].Message, "bogus") {
+		t.Errorf("EXPLAIN should still surface inner-query typos: %v", issueMessages(got))
+	}
+}

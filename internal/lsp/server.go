@@ -37,8 +37,9 @@ var (
 	docsMu sync.Mutex
 	docs   = map[string]string{}
 
-	schemaMu     sync.RWMutex
-	loadedSchema *schema.Schema
+	schemaMu        sync.RWMutex
+	loadedSchema    *schema.Schema
+	loadedSchemaDir string // resolved absolute path of the active schema directory
 
 	notify glsp.NotifyFunc
 
@@ -416,10 +417,44 @@ func loadAndSetSchema(dir string) {
 		log.Printf("schema load %q: %v", dir, err)
 		return
 	}
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		// Fall back to the input dir; isInSchemaDir will still
+		// produce a workable comparison for absolute inputs.
+		abs = dir
+	}
 	schemaMu.Lock()
 	loadedSchema = s
+	loadedSchemaDir = filepath.Clean(abs)
 	schemaMu.Unlock()
 	log.Printf("loaded schema from %s (%d tables)", dir, len(s.Tables))
+}
+
+// isInSchemaDir reports whether uri points at a file under the
+// active schema directory. pgls treats those files as the source of
+// truth — linting them against the schema they themselves define is
+// nonsensical, and a CREATE TABLE in users.sql shouldn't get a red
+// squiggle on its own table name.
+func isInSchemaDir(uri string) bool {
+	schemaMu.RLock()
+	dir := loadedSchemaDir
+	schemaMu.RUnlock()
+	if dir == "" {
+		return false
+	}
+	p := uriToPath(uri)
+	if p == "" {
+		return false
+	}
+	abs, err := filepath.Abs(p)
+	if err != nil {
+		return false
+	}
+	abs = filepath.Clean(abs)
+	if abs == dir {
+		return true
+	}
+	return strings.HasPrefix(abs, dir+string(filepath.Separator))
 }
 
 // startSchemaWatcher launches a single fsnotify-based watcher on dir
@@ -613,6 +648,18 @@ func publishDiagnostics(uri string) {
 	// actually wipes stale errors.
 	diags := []protocol.Diagnostic{}
 
+	// Files inside the schema directory ARE the schema — don't lint
+	// them against themselves. Publishing an explicit empty list
+	// also clears any prior diagnostics that may be stale (e.g.
+	// from before a schemaDir was configured).
+	if isInSchemaDir(uri) {
+		notify(protocol.ServerTextDocumentPublishDiagnostics, &protocol.PublishDiagnosticsParams{
+			URI:         uri,
+			Diagnostics: diags,
+		})
+		return
+	}
+
 	if strings.HasSuffix(uri, ".go") {
 		for _, blk := range goast.FindAllSQL(src, currentSQLFuncs()) {
 			for _, iss := range sqlctx.Lint(blk.SQL, s) {
@@ -781,6 +828,13 @@ func documentLink(_ *glsp.Context, params *protocol.DocumentLinkParams) ([]proto
 		return []protocol.DocumentLink{}, nil
 	}
 	uri := params.TextDocument.URI
+	// Schema files would otherwise produce links pointing back at
+	// themselves (e.g. `users` in `users.sql` → `users.sql#L1`).
+	// Suppress them — pgls treats those files as definitions, not
+	// references.
+	if isInSchemaDir(uri) {
+		return []protocol.DocumentLink{}, nil
+	}
 	docsMu.Lock()
 	text := docs[uri]
 	docsMu.Unlock()

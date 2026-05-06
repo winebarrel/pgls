@@ -175,9 +175,17 @@ func parseWithMarkers(src []byte) (*token.FileSet, *ast.File, map[token.Pos]bool
 }
 
 // callSQLPositions returns the set of string-literal positions that are
-// passed as direct arguments to a call expression whose function name
+// passed as the query argument to a call expression whose function name
 // matches funcs. Methods are matched by selector name only ("Query"
 // covers `db.Query(...)`, `tx.Query(...)`, `*sql.DB.Query(...)`).
+//
+// Only the *first* string literal among the call's positional args is
+// flagged. That handles the standard database/sql shape — Query / Exec
+// take the SQL as their first arg, while *Context variants put the
+// context first (a non-literal) and the SQL as the next arg, which is
+// still the first literal seen. The single-literal rule also avoids
+// false positives like `db.Exec("INSERT ...", "literal_value")`, where
+// the second string literal is a parameter value, not SQL.
 func callSQLPositions(file *ast.File, funcs SQLFunctions) map[token.Pos]bool {
 	if len(funcs) == 0 {
 		return nil
@@ -195,6 +203,7 @@ func callSQLPositions(file *ast.File, funcs SQLFunctions) map[token.Pos]bool {
 		for _, arg := range call.Args {
 			if lit, ok := arg.(*ast.BasicLit); ok && lit.Kind == token.STRING {
 				out[lit.Pos()] = true
+				break
 			}
 		}
 		return true

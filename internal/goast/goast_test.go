@@ -181,6 +181,23 @@ func somethingElse(s string) string { return s }
 	}
 }
 
+func TestFindSQL_OnlyFirstStringLiteralArgIsSQL(t *testing.T) {
+	// Per-Copilot review on PR #12: the second string literal argument
+	// (a parameter value, not SQL) must NOT be flagged as SQL. Only
+	// the first string literal among the call's args counts.
+	src, line, char := cursorAt(t, `package main
+
+import "database/sql"
+
+func main(db *sql.DB) {
+	_, _ = db.Exec(`+"`INSERT INTO users (email) VALUES ($1)`"+`, "literal<|>_value")
+}
+`)
+	if _, _, ok := FindSQL(src, line, char, DefaultSQLFunctions()); ok {
+		t.Error("want ok=false: the second string literal is a value, not SQL")
+	}
+}
+
 func TestFindAllSQL_FunctionCalls(t *testing.T) {
 	src := []byte(`package main
 

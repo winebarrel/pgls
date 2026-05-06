@@ -55,7 +55,7 @@ pgls will pick it up automatically:
 }
 ```
 
-`sqlFunctions` is optional; omit to inherit the default
+`sqlFunctions` is optional; omit it to inherit the default
 `database/sql` method names (`Query`, `QueryRow`, `QueryContext`,
 `QueryRowContext`, `Exec`, `ExecContext`, `Prepare`, `PrepareContext`).
 An explicit empty array disables function-call detection so only

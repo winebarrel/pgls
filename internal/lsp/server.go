@@ -247,14 +247,19 @@ func sqlFunctionsFromConfigFile(params *protocol.InitializeParams) ([]string, bo
 	if root == "" {
 		return nil, false
 	}
-	b, err := os.ReadFile(filepath.Join(root, ".pgls.json"))
+	path := filepath.Join(root, ".pgls.json")
+	b, err := os.ReadFile(path)
 	if err != nil {
+		if !os.IsNotExist(err) {
+			log.Printf("read %s: %v", path, err)
+		}
 		return nil, false
 	}
 	var raw struct {
 		SQLFunctions *[]string `json:"sqlFunctions"`
 	}
 	if err := json.Unmarshal(b, &raw); err != nil {
+		log.Printf("parse %s: %v", path, err)
 		return nil, false
 	}
 	if raw.SQLFunctions == nil {

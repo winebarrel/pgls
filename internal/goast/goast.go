@@ -195,25 +195,12 @@ func callSQLPositions(file *ast.File, funcs SQLFunctions) map[token.Pos]bool {
 		if !ok || idx < 0 || idx >= len(call.Args) {
 			return true
 		}
-		if lit, ok := unwrapParens(call.Args[idx]).(*ast.BasicLit); ok && lit.Kind == token.STRING {
+		if lit, ok := call.Args[idx].(*ast.BasicLit); ok && lit.Kind == token.STRING {
 			out[lit.Pos()] = true
 		}
 		return true
 	})
 	return out
-}
-
-// unwrapParens peels off any number of *ast.ParenExpr wrappers so a
-// literal written as `db.Query((`SELECT ...`))` is still recognised as
-// a string literal in the query slot.
-func unwrapParens(e ast.Expr) ast.Expr {
-	for {
-		p, ok := e.(*ast.ParenExpr)
-		if !ok {
-			return e
-		}
-		e = p.X
-	}
 }
 
 // callFuncName returns the trailing identifier of a selector-style

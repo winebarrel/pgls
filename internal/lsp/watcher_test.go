@@ -56,8 +56,17 @@ func TestStartSchemaWatcher_NoOpAfterSuccess(t *testing.T) {
 	assert.True(t, watcherStarted, "still started after second call")
 }
 
+// resetWatcher tears the watcher down to a clean state between
+// tests. Closing watcherInstance signals runWatcher's select to exit
+// (fsnotify closes the Events/Errors channels on Close), so the
+// goroutine and file descriptor don't leak across cases. fsnotify's
+// Close is idempotent, so the defer in runWatcher remains harmless.
 func resetWatcher() {
 	watcherMu.Lock()
 	defer watcherMu.Unlock()
+	if watcherInstance != nil {
+		_ = watcherInstance.Close()
+		watcherInstance = nil
+	}
 	watcherStarted = false
 }

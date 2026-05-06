@@ -44,14 +44,17 @@ var (
 
 	cliDir string
 
-	// watcherMu guards watcherStarted. We use a manual flag rather
-	// than sync.Once because Once treats any callback return — even
-	// an early-return on failure — as "done", which would
-	// permanently disable the watcher if e.g. the schema directory
-	// didn't exist at first call. With this layout each call is a
-	// retry until one actually launches the goroutine.
-	watcherMu      sync.Mutex
-	watcherStarted bool
+	// watcherMu guards watcherStarted and watcherInstance. We use a
+	// manual flag rather than sync.Once because Once treats any
+	// callback return — even an early-return on failure — as
+	// "done", which would permanently disable the watcher if e.g.
+	// the schema directory didn't exist at first call. With this
+	// layout each call is a retry until one actually launches the
+	// goroutine. watcherInstance is held so tests can shut the
+	// watcher down between cases; in production it's never closed.
+	watcherMu       sync.Mutex
+	watcherStarted  bool
+	watcherInstance *fsnotify.Watcher
 
 	// publishMu serializes publishDiagnostics so that the notification
 	// stream stays in sequence even when didChange fans out across
@@ -444,6 +447,7 @@ func startSchemaWatcher(dir string) {
 	}
 
 	go runWatcher(w, dir)
+	watcherInstance = w
 	watcherStarted = true
 }
 

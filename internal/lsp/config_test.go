@@ -121,6 +121,44 @@ func TestLoadConfigFile_MalformedJSONShowsError(t *testing.T) {
 	_ = root
 }
 
+func TestLoadConfigFile_UnknownFieldShowsError(t *testing.T) {
+	// Strict decode: a typo'd key (`sqlFunktions` instead of
+	// `sqlFunctions`) must error rather than silently dropping the
+	// user's intended config. window/showMessage surfaces the typo
+	// so they can fix it.
+	root, uri := makeWorkspaceRoot(t)
+	writeConfig(t, root, `{"schemaDir": "db", "sqlFunktions": []}`)
+
+	captured := captureNotify(t)
+	require.Nil(t, loadConfigFile(paramsFor(uri, nil)))
+
+	require.Len(t, *captured, 1)
+	p, ok := (*captured)[0].params.(*protocol.ShowMessageParams)
+	require.True(t, ok)
+	assert.Equal(t, protocol.MessageTypeError, p.Type)
+	assert.Contains(t, p.Message, "sqlFunktions",
+		"the rejected field name should appear in the error so the user can spot the typo")
+	_ = root
+}
+
+func TestInitOptionsConfig_UnknownFieldShowsError(t *testing.T) {
+	// Same strictness for initializationOptions — a misspelled key in
+	// the editor's settings shouldn't be silently accepted.
+	_, uri := makeWorkspaceRoot(t)
+
+	captured := captureNotify(t)
+	require.Nil(t, initOptionsConfig(paramsFor(uri, map[string]any{
+		"schemaDir":  "db",
+		"sqlFunktns": []any{},
+	})))
+
+	require.Len(t, *captured, 1)
+	p, ok := (*captured)[0].params.(*protocol.ShowMessageParams)
+	require.True(t, ok)
+	assert.Equal(t, protocol.MessageTypeError, p.Type)
+	assert.Contains(t, p.Message, "sqlFunktns")
+}
+
 func TestInitOptionsConfig_MalformedShowsError(t *testing.T) {
 	// Same idea for editor-supplied initializationOptions — a malformed
 	// payload (e.g. wrong type for sqlFunctions) is reported rather than

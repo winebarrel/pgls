@@ -15,15 +15,12 @@ type SQLString struct {
 	StartByte int // byte offset of the inner SQL within the source
 }
 
-// SQLFunctions maps a Go function or method name to the positional
-// argument index that holds the SQL string. Method names are matched
-// without a receiver, so "Query" matches `db.Query(...)`, `tx.Query(...)`,
-// `*sql.DB.Query(...)` alike.
-//
-// The lsp layer is responsible for resolving "auto" positions
-// (database/sql convention: 1 for *Context variants, 0 otherwise) into
-// the explicit indices stored here, so goast itself can stay a dumb
-// positional lookup.
+// SQLFunctions maps a Go method name to the 0-indexed positional
+// argument that holds the SQL string. Method names are matched
+// without a receiver, so "Query" matches `db.Query(...)`,
+// `tx.Query(...)`, `*sql.DB.Query(...)` alike. Bare-identifier calls
+// (a same-package `Query("...")` helper) are deliberately not matched
+// — see callFuncName.
 type SQLFunctions = map[string]int
 
 // DefaultSQLFunctions returns database/sql's DB / Tx methods that take

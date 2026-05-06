@@ -1,6 +1,7 @@
 package lsp
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io/fs"
@@ -136,12 +137,26 @@ func initialize(ctx *glsp.Context, params *protocol.InitializeParams) (any, erro
 	}, nil
 }
 
+// decodeConfig strictly decodes a JSON payload into a pglsConfig.
+// "Strict" means: unknown fields are rejected — a typo like
+// `sqlFunktions` would otherwise be silently dropped, leaving the
+// user with a config that "doesn't work" and no obvious reason why.
+func decodeConfig(b []byte) (*pglsConfig, error) {
+	dec := json.NewDecoder(bytes.NewReader(b))
+	dec.DisallowUnknownFields()
+	var cfg pglsConfig
+	if err := dec.Decode(&cfg); err != nil {
+		return nil, err
+	}
+	return &cfg, nil
+}
+
 // loadConfigFile reads `.pgls.json` from the workspace root and
 // returns its parsed contents, or nil if the workspace root is unknown
-// or the file is missing. A malformed file is parsed strictly — one
-// bad field invalidates the whole payload — so the user gets a single
-// `window/showMessage` toast and is prompted to fix the file rather
-// than silently losing one or more fields to a typo.
+// or the file is missing. Decoding is strict — invalid JSON, wrong
+// types, AND unknown fields all yield nil plus a `window/showMessage`
+// error toast, so the user can see and fix the typo rather than
+// silently losing config to a misspelled key.
 func loadConfigFile(params *protocol.InitializeParams) *pglsConfig {
 	root := workspaceRoot(params)
 	if root == "" {
@@ -155,21 +170,21 @@ func loadConfigFile(params *protocol.InitializeParams) *pglsConfig {
 		}
 		return nil
 	}
-	var cfg pglsConfig
-	if err := json.Unmarshal(b, &cfg); err != nil {
+	cfg, err := decodeConfig(b)
+	if err != nil {
 		msg := fmt.Sprintf("pgls: failed to parse %s — %v", path, err)
 		log.Print(msg)
 		showError(msg)
 		return nil
 	}
-	return &cfg
+	return cfg
 }
 
 // initOptionsConfig parses params.InitializationOptions into a
 // pglsConfig. Returns nil when init options are absent, JSON-encoding
-// fails, or the unmarshal fails outright. A malformed payload is
-// surfaced via window/showMessage so a typo in editor settings is
-// visible rather than producing an inert pgls.
+// fails, or strict decoding fails (unknown field, wrong type, etc.).
+// Decode failures surface via window/showMessage so a typo in editor
+// settings is visible rather than producing an inert pgls.
 func initOptionsConfig(params *protocol.InitializeParams) *pglsConfig {
 	if params.InitializationOptions == nil {
 		return nil
@@ -178,14 +193,14 @@ func initOptionsConfig(params *protocol.InitializeParams) *pglsConfig {
 	if err != nil {
 		return nil
 	}
-	var cfg pglsConfig
-	if err := json.Unmarshal(b, &cfg); err != nil {
+	cfg, err := decodeConfig(b)
+	if err != nil {
 		msg := fmt.Sprintf("pgls: failed to parse initializationOptions — %v", err)
 		log.Print(msg)
 		showError(msg)
 		return nil
 	}
-	return &cfg
+	return cfg
 }
 
 // showError sends an error-level window/showMessage to the editor.

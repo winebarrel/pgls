@@ -62,6 +62,34 @@ func TestCompletion_QualifiedColumn(t *testing.T) {
 	assert.ElementsMatch(t, []string{"id", "email"}, labels)
 }
 
+func TestCompletion_KeywordsOfferedAfterFROM(t *testing.T) {
+	resetState(t)
+	setSchemaForTest(t, schemaWithPositions())
+	uri := "file:///tmp/x.sql"
+	setDocForTest(t, uri, "SELECT * FROM ")
+	items := runCompletion(t, uri, 0, 14)
+	labels := labelsOf(items)
+	assert.Contains(t, labels, "users")
+	assert.Contains(t, labels, "WHERE")
+	assert.Contains(t, labels, "JOIN")
+
+	where := itemByLabel(items, "WHERE")
+	require.NotNil(t, where)
+	require.NotNil(t, where.SortText)
+	assert.True(t, (*where.SortText)[0] == 'z',
+		"keyword SortText should sort after tables/columns")
+}
+
+func TestCompletion_QualifiedColumn_NoKeywords(t *testing.T) {
+	resetState(t)
+	setSchemaForTest(t, schemaWithPositions())
+	uri := "file:///tmp/x.sql"
+	setDocForTest(t, uri, "SELECT u. FROM users u")
+	labels := labelsOf(runCompletion(t, uri, 0, 9))
+	assert.NotContains(t, labels, "WHERE", "keywords must not pollute dot-completion")
+	assert.NotContains(t, labels, "SELECT")
+}
+
 func TestCompletion_DuplicateColumnsAreQualified(t *testing.T) {
 	resetState(t)
 	setSchemaForTest(t, schemaWithPositions())

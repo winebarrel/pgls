@@ -22,10 +22,10 @@ are produced for darwin / linux / windows × amd64 / arm64.
 
 ### From source
 
-Requires Go 1.22 or later:
+Requires Go 1.25 or later:
 
 ```sh
-go install github.com/winebarrel/pgls@v0.3.0
+go install github.com/winebarrel/pgls@v0.3.1
 ```
 
 ## Quickstart

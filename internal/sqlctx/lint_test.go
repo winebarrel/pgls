@@ -84,6 +84,36 @@ func TestLint_QualifierViaTableName(t *testing.T) {
 	}
 }
 
+func TestLint_SchemaQualifiedUnknownTable(t *testing.T) {
+	// `FROM schema.table` — when the table doesn't exist, lint should
+	// flag it. Previously the linear walker fell into the
+	// qualified-column branch, found that "public" wasn't a table, and
+	// silently skipped — a false negative.
+	s := makeSchema()
+	issues := Lint("SELECT * FROM public.bogus", s)
+	if len(issues) != 1 || !strings.Contains(issues[0].Message, "bogus") {
+		t.Fatalf("got %v", issueMessages(issues))
+	}
+}
+
+func TestLint_SchemaQualifiedKnownTable(t *testing.T) {
+	// `FROM public.users` where both "public" (a table) and "users" (a
+	// table) exist in the schema must NOT produce
+	//   `column "users" not in table "public"`
+	// — that was a false positive from misinterpreting the schema
+	// qualifier as a table-qualified column reference.
+	s := fakeSchema{
+		tables: map[string]bool{"users": true, "public": true},
+		columns: map[string]map[string]bool{
+			"users":  {"id": true},
+			"public": {"id": true},
+		},
+	}
+	if got := Lint("SELECT * FROM public.users", s); len(got) != 0 {
+		t.Errorf("unexpected: %v", issueMessages(got))
+	}
+}
+
 func TestLint_JoinUnknown(t *testing.T) {
 	s := makeSchema()
 	issues := Lint("SELECT * FROM users JOIN nope ON 1=1", s)

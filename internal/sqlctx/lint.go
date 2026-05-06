@@ -74,6 +74,20 @@ func Lint(sql string, s Schema) []Issue {
 		if prev != nil && prev.text == "." {
 			prev2 := tokenPtr(tokens, i-2)
 			if prev2 != nil && isIdent(prev2.text) && !stopWords[strings.ToUpper(prev2.text)] {
+				// `FROM/JOIN/INTO/UPDATE schema.table` — the right
+				// side is a bare table reference, not a qualified
+				// column. Validate it as a table.
+				prev3 := tokenPtr(tokens, i-3)
+				if prev3 != nil && isFromKeyword(prev3.text) {
+					if !s.HasTable(t.text) && !info.virtual[t.text] {
+						issues = append(issues, Issue{
+							Start:   t.start,
+							End:     t.end,
+							Message: fmt.Sprintf("unknown table %q", t.text),
+						})
+					}
+					continue
+				}
 				qualifier := prev2.text
 				realName, ok := aliases[qualifier]
 				if !ok {

@@ -227,9 +227,9 @@ func TestLint_FunctionNotFlagged(t *testing.T) {
 
 func TestLint_NonQueryStatementsAreSkipped(t *testing.T) {
 	// pgls's lint allow-lists query verbs (SELECT/INSERT/UPDATE/
-	// DELETE/MERGE/WITH/VALUES/EXPLAIN). Everything else — DDL,
-	// admin commands, etc. — falls through unchecked, which both
-	// avoids spurious diagnostics on schema-defining SQL and
+	// DELETE/MERGE/WITH/VALUES). Everything else — DDL, admin
+	// commands, EXPLAIN, etc. — falls through unchecked, which
+	// both avoids spurious diagnostics on schema-defining SQL and
 	// keeps pgls future-proof against new DDL keywords.
 	s := makeSchema()
 	cases := []string{

@@ -122,7 +122,6 @@ func TestLoadConfigFile_MalformedJSONShowsError(t *testing.T) {
 	require.True(t, ok)
 	assert.Equal(t, protocol.MessageTypeError, p.Type)
 	assert.Contains(t, p.Message, ".pgls.json")
-	_ = root
 }
 
 func TestLoadConfigFile_UnknownFieldShowsError(t *testing.T) {
@@ -142,7 +141,6 @@ func TestLoadConfigFile_UnknownFieldShowsError(t *testing.T) {
 	assert.Equal(t, protocol.MessageTypeError, p.Type)
 	assert.Contains(t, p.Message, "sqlFunktions",
 		"the rejected field name should appear in the error so the user can spot the typo")
-	_ = root
 }
 
 func TestInitOptionsConfig_UnknownFieldShowsError(t *testing.T) {
@@ -163,6 +161,29 @@ func TestInitOptionsConfig_UnknownFieldShowsError(t *testing.T) {
 	assert.Contains(t, p.Message, "sqlFunktns")
 }
 
+func TestLoadConfigFile_ReadErrorShowsError(t *testing.T) {
+	// `.pgls.json` exists but pgls can't read it (here: no read
+	// permission). Without a window/showMessage the editor user sees
+	// pgls quietly do nothing and has no idea config was skipped.
+	if os.Geteuid() == 0 {
+		t.Skip("running as root: chmod 0 doesn't block reads, can't simulate")
+	}
+	root, uri := makeWorkspaceRoot(t)
+	path := filepath.Join(root, ".pgls.json")
+	require.NoError(t, os.WriteFile(path, []byte(`{}`), 0o644))
+	require.NoError(t, os.Chmod(path, 0))
+	t.Cleanup(func() { _ = os.Chmod(path, 0o644) })
+
+	captured := captureNotify(t)
+	require.Nil(t, loadConfigFile(paramsFor(uri, nil)))
+
+	require.Len(t, *captured, 1)
+	p, ok := (*captured)[0].params.(*protocol.ShowMessageParams)
+	require.True(t, ok)
+	assert.Equal(t, protocol.MessageTypeError, p.Type)
+	assert.Contains(t, p.Message, "failed to read")
+}
+
 func TestLoadConfigFile_TrailingDataShowsError(t *testing.T) {
 	// `{...}\n{...}` is not valid pgls config — the JSON decoder will
 	// happily decode the first object and ignore the rest, so without
@@ -180,7 +201,6 @@ func TestLoadConfigFile_TrailingDataShowsError(t *testing.T) {
 	require.True(t, ok)
 	assert.Equal(t, protocol.MessageTypeError, p.Type)
 	assert.Contains(t, p.Message, "unexpected data")
-	_ = root
 }
 
 func TestInitOptionsConfig_MalformedShowsError(t *testing.T) {

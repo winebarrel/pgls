@@ -159,7 +159,13 @@ func decodeConfig(b []byte) (*pglsConfig, error) {
 		return nil, err
 	}
 	if err := dec.Decode(&struct{}{}); err != io.EOF {
-		return nil, fmt.Errorf("unexpected data after JSON value")
+		// err here describes what the trailing bytes look like (a
+		// stray array, a malformed token, etc.) and is the most
+		// useful diagnostic we have. Wrap rather than discard.
+		if err == nil {
+			return nil, fmt.Errorf("unexpected data after JSON value")
+		}
+		return nil, fmt.Errorf("unexpected data after JSON value: %w", err)
 	}
 	return &cfg, nil
 }
@@ -178,8 +184,15 @@ func loadConfigFile(params *protocol.InitializeParams) *pglsConfig {
 	path := filepath.Join(root, ".pgls.json")
 	b, err := os.ReadFile(path)
 	if err != nil {
+		// ENOENT is the normal "no config file" path — silent. Any
+		// other error (permission denied, IO, broken symlink) means
+		// the file exists but pgls couldn't actually load it; surface
+		// that via window/showMessage so the editor user notices
+		// instead of seeing pgls quietly do nothing.
 		if !os.IsNotExist(err) {
-			log.Printf("read %s: %v", path, err)
+			msg := fmt.Sprintf("pgls: failed to read %s — %v", path, err)
+			log.Print(msg)
+			showError(msg)
 		}
 		return nil
 	}

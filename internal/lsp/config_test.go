@@ -201,6 +201,75 @@ func TestSQLFunctions_ConfigFileBeatsInitOptions(t *testing.T) {
 	assert.Equal(t, []sqlFunctionEntry{{Name: "FromFile", ArgIndex: 0}}, got)
 }
 
+func TestSetSQLFunctions_AllInvalidFallsBackToDefaults(t *testing.T) {
+	// A config like `[{"name": "", "argIndex": -1}]` has zero usable
+	// entries — silently honouring it would disable function-call
+	// detection (indistinguishable from `[]`). pgls instead falls
+	// back to the default set and surfaces the failure via
+	// window/showMessage so the user notices.
+	prev := loadedSQLFuncs
+	t.Cleanup(func() {
+		sqlFuncsMu.Lock()
+		loadedSQLFuncs = prev
+		sqlFuncsMu.Unlock()
+	})
+
+	captured := captureNotify(t)
+	setSQLFunctions([]sqlFunctionEntry{
+		{Name: "", ArgIndex: 0},
+		{Name: "Bad", ArgIndex: -1},
+	})
+
+	got := currentSQLFuncs()
+	assert.NotEmpty(t, got, "should fall back to defaults, not be empty")
+	assert.Contains(t, got, "Query", "default set must be in effect")
+
+	require.Len(t, *captured, 1)
+	p, ok := (*captured)[0].params.(*protocol.ShowMessageParams)
+	require.True(t, ok)
+	assert.Equal(t, protocol.MessageTypeError, p.Type)
+	assert.Contains(t, p.Message, "sqlFunctions")
+}
+
+func TestSetSQLFunctions_PartialInvalidUsesValid(t *testing.T) {
+	// Mixed list: keep the valid entries, log the invalid ones, no
+	// fallback to defaults — the user gave a partial valid config so
+	// honour what they meant.
+	prev := loadedSQLFuncs
+	t.Cleanup(func() {
+		sqlFuncsMu.Lock()
+		loadedSQLFuncs = prev
+		sqlFuncsMu.Unlock()
+	})
+
+	captured := captureNotify(t)
+	setSQLFunctions([]sqlFunctionEntry{
+		{Name: "Good", ArgIndex: 0},
+		{Name: "", ArgIndex: 0}, // invalid — silently dropped
+	})
+
+	got := currentSQLFuncs()
+	assert.Equal(t, 1, len(got))
+	assert.Equal(t, 0, got["Good"])
+	assert.Empty(t, *captured, "partial-valid config should not fire showMessage")
+}
+
+func TestSetSQLFunctions_EmptySliceStaysDisabled(t *testing.T) {
+	// Confirm `[]` (explicit disable) is preserved and doesn't
+	// trip the all-invalid fallback.
+	prev := loadedSQLFuncs
+	t.Cleanup(func() {
+		sqlFuncsMu.Lock()
+		loadedSQLFuncs = prev
+		sqlFuncsMu.Unlock()
+	})
+
+	captured := captureNotify(t)
+	setSQLFunctions([]sqlFunctionEntry{})
+	assert.Empty(t, currentSQLFuncs(), "explicit empty slice must disable detection")
+	assert.Empty(t, *captured)
+}
+
 func TestSchemaDir_EmptyConfigSchemaDir(t *testing.T) {
 	root, uri := makeWorkspaceRoot(t)
 	writeConfig(t, root, `{"schemaDir": ""}`)

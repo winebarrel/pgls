@@ -206,18 +206,22 @@ func callSQLPositions(file *ast.File, funcs SQLFunctions) map[token.Pos]bool {
 	return out
 }
 
+// callFuncName returns the method name for a method-style call like
+// `db.Query(...)`, or "" otherwise. Bare-identifier calls (e.g. a
+// same-package `Query("...")` helper) are deliberately excluded —
+// pgls configures function names without a receiver, so matching
+// unqualified idents would let an unrelated `Query` defined elsewhere
+// in the same package accidentally trigger SQL handling. Generic
+// instantiations of method calls (`pkg.Query[T](...)` → *ast.IndexExpr,
+// `pkg.Query[T,U](...)` → *ast.IndexListExpr) are unwrapped so they
+// still match.
 func callFuncName(fun ast.Expr) string {
-	// Unwrap generic instantiations — `pkg.Query[T](...)` parses with
-	// fun = *ast.IndexExpr, and `pkg.Query[T, U](...)` with
-	// *ast.IndexListExpr — to reach the underlying ident/selector.
 	for {
 		switch fn := fun.(type) {
 		case *ast.IndexExpr:
 			fun = fn.X
 		case *ast.IndexListExpr:
 			fun = fn.X
-		case *ast.Ident:
-			return fn.Name
 		case *ast.SelectorExpr:
 			return fn.Sel.Name
 		default:

@@ -285,10 +285,15 @@ func sqlFunctionsFromOptionsWith(fileCfg, initCfg *pglsConfig) []sqlFunctionEntr
 }
 
 
-// setSQLFunctions installs the active SQL-function set. A nil argument
-// reverts to DefaultSQLFunctions; otherwise the caller's slice is used
-// verbatim — an empty slice disables function-call detection so only
-// the language=sql marker comment fires.
+// setSQLFunctions installs the active SQL-function set.
+//   - nil funcs reverts to DefaultSQLFunctions.
+//   - An empty slice (`[]`) is the explicit "disable function-call
+//     detection" signal — only the language=sql marker fires.
+//   - Otherwise each entry is validated (non-empty Name, non-negative
+//     ArgIndex). Invalid entries are logged. If every entry is invalid
+//     we fall back to defaults and surface a window/showMessage so the
+//     user knows their config is wrong, rather than silently ending up
+//     with detection disabled.
 func setSQLFunctions(funcs []sqlFunctionEntry) {
 	sqlFuncsMu.Lock()
 	defer sqlFuncsMu.Unlock()
@@ -297,11 +302,24 @@ func setSQLFunctions(funcs []sqlFunctionEntry) {
 		return
 	}
 	set := make(goast.SQLFunctions, len(funcs))
+	invalid := 0
 	for _, e := range funcs {
 		if e.Name == "" || e.ArgIndex < 0 {
+			invalid++
+			log.Printf("sqlFunctions: ignoring invalid entry %+v", e)
 			continue
 		}
 		set[e.Name] = e.ArgIndex
+	}
+	if invalid > 0 && len(set) == 0 {
+		// Every entry was rejected — distinguish this from `[]` (which
+		// is the explicit-disable signal) by falling back to defaults
+		// and telling the user.
+		msg := fmt.Sprintf("pgls: every sqlFunctions entry was invalid (%d ignored); falling back to defaults", invalid)
+		log.Print(msg)
+		showError(msg)
+		loadedSQLFuncs = goast.DefaultSQLFunctions()
+		return
 	}
 	loadedSQLFuncs = set
 }

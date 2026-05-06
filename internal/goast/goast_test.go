@@ -264,6 +264,25 @@ func main(ctx context.Context, db *sql.DB) {
 	}
 }
 
+func TestFindSQL_UnqualifiedCallIgnored(t *testing.T) {
+	// `Query("...")` (a same-package function call rather than a
+	// method) must NOT match the default SQL function list — the
+	// configured names are method-style, and matching unqualified
+	// idents would let any same-package `Query` accidentally trigger
+	// SQL handling.
+	src, line, char := cursorAt(t, `package main
+
+func main() {
+	_ = Query(`+"`SELECT id<|> FROM users`"+`)
+}
+
+func Query(s string) string { return s }
+`)
+	if _, _, ok := FindSQL(src, line, char, DefaultSQLFunctions()); ok {
+		t.Error("want ok=false: unqualified Query() must not match")
+	}
+}
+
 func TestFindAllSQL_FunctionCalls(t *testing.T) {
 	src := []byte(`package main
 

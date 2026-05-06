@@ -119,7 +119,7 @@ language-servers = ["pgls"]
 
 ### VSCode
 
-Install [pgls](https://marketplace.visualstudio.com/items?itemName=winebarrel.pgls)
+Install [pgls](https://marketplace.visualstudio.com/items?itemName=winebarrel.pgls-vscode)
 from the VS Code Marketplace
 ([source](https://github.com/winebarrel/pgls-vscode)). The extension
 spawns the `pgls` binary on `.go` and `.sql` files; configure the

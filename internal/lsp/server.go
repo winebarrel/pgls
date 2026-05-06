@@ -195,7 +195,7 @@ func startSchemaWatcher(dir string) {
 		}
 		if err := addDirsRecursively(w, dir); err != nil {
 			log.Printf("schema watcher add %q: %v", dir, err)
-			w.Close()
+			w.Close() //nolint:errcheck
 			return
 		}
 
@@ -216,7 +216,7 @@ func addDirsRecursively(w *fsnotify.Watcher, root string) error {
 }
 
 func runWatcher(w *fsnotify.Watcher, dir string) {
-	defer w.Close()
+	defer w.Close() //nolint:errcheck
 
 	var (
 		timer   *time.Timer

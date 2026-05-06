@@ -49,8 +49,32 @@ If the editor doesn't expose a clean way to pass `initializationOptions`
 pgls will pick it up automatically:
 
 ```json
-{ "schemaDir": "db/schema" }
+{
+  "schemaDir": "db/schema",
+  "sqlFunctions": [
+    { "name": "Query",        "argIndex": 0 },
+    { "name": "QueryContext", "argIndex": 1 },
+    { "name": "Get",          "argIndex": 1 },
+    { "name": "Select",       "argIndex": 1 }
+  ]
+}
 ```
+
+Each entry names a Go function or method (matched by selector, no
+type resolution) and `argIndex` (0-origin) tells pgls which positional
+argument carries the SQL string. **Both `name` and `argIndex` are
+required per entry** — a missing `argIndex` is rejected at validation
+time rather than silently defaulting to 0 (which would be wrong for
+`*Context` methods, where the SQL lives at arg 1). Method names are
+matched without a receiver, so `"Query"` covers `db.Query`, `tx.Query`,
+`*sql.DB.Query` all together.
+
+`sqlFunctions` itself is optional: omit the whole field to inherit
+the default `database/sql` set (`Query`, `QueryRow`, `Exec`,
+`Prepare` at arg 0, plus their `*Context` variants at arg 1), or set
+it to `[]` to disable function-call detection so only marker comments
+fire. Per-entry omission of `argIndex` is **not** the way to express
+either — use one of those two switches instead.
 
 `.pgls.json` is the project's authoritative schema location and
 wins over `initializationOptions` when both are present —
@@ -158,20 +182,30 @@ schema directory per-workspace in `.vscode/settings.json`:
 - **Diagnostics** — flags `FROM`/`JOIN` references to unknown
   tables, qualifiers that resolve to neither a table nor an alias,
   and qualified columns missing from the resolved table.
-- **Go-aware** — inside `.go` files, all features only fire on
-  string literals that have a `language=sql` (or `language=postgresql`)
-  marker comment on the line directly above. The marker convention is
-  borrowed from JetBrains IDEs:
+- **Go-aware** — inside `.go` files, pgls treats a string literal as
+  SQL when one of:
+  1. It carries a JetBrains-style `language=sql` (or
+     `language=postgresql`) marker comment on the line directly above.
+     Block-comment form (`/* language=sql */`) and any case works.
+  2. It's passed to a recognized SQL method. Defaults cover
+     `database/sql` (`Query`, `QueryRow`, `QueryContext`,
+     `QueryRowContext`, `Exec`, `ExecContext`, `Prepare`,
+     `PrepareContext`); override with `sqlFunctions` in `.pgls.json`
+     or `initializationOptions` to add your own (e.g. sqlx's `Get` /
+     `Select` / `NamedExec`) or set it to `[]` to disable function-call
+     detection entirely.
 
   ```go
+  // marker form
   // language=sql
   q := `SELECT id, email FROM users WHERE id = $1`
+
+  // function-call form (no comment needed)
+  rows, err := db.Query(`SELECT id, email FROM users`)
   ```
 
-  Block-comment form (`/* language=sql */`) is also accepted. The
-  match is case-insensitive. Without a marker, pgls leaves the string
-  alone — no completion, no diagnostics — so non-SQL strings never
-  get false hits.
+  Without either, pgls leaves the string alone — no completion, no
+  diagnostics — so non-SQL strings never get false hits.
 - **Hot reload** — the schema directory is watched; editing or adding
   `.sql` files triggers a reload (debounced 200 ms) and republishes
   diagnostics for all open documents.

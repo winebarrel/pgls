@@ -31,7 +31,7 @@ func main() {
 	_ = q
 }
 `)
-	sql, off, ok := FindSQL(src, line, char)
+	sql, off, ok := FindSQL(src, line, char, DefaultSQLFunctions())
 	if !ok {
 		t.Fatal("want ok=true")
 	}
@@ -49,7 +49,7 @@ func main() {
 	_ = q
 }
 `)
-	if _, _, ok := FindSQL(src, line, char); !ok {
+	if _, _, ok := FindSQL(src, line, char, DefaultSQLFunctions()); !ok {
 		t.Fatal("want ok=true")
 	}
 }
@@ -62,7 +62,7 @@ func main() {
 	_ = q
 }
 `)
-	if _, _, ok := FindSQL(src, line, char); ok {
+	if _, _, ok := FindSQL(src, line, char, DefaultSQLFunctions()); ok {
 		t.Error("want ok=false without marker")
 	}
 }
@@ -79,7 +79,7 @@ func main() {
 	_ = q
 }
 `)
-	if _, _, ok := FindSQL(src, line, char); ok {
+	if _, _, ok := FindSQL(src, line, char, DefaultSQLFunctions()); ok {
 		t.Error("want ok=false when marker is not immediately above")
 	}
 }
@@ -93,7 +93,7 @@ func main() {
 	_ = q
 }
 `)
-	if _, _, ok := FindSQL(src, line, char); !ok {
+	if _, _, ok := FindSQL(src, line, char, DefaultSQLFunctions()); !ok {
 		t.Error("want ok=true with /* language=SQL */ marker")
 	}
 }
@@ -106,7 +106,7 @@ func main() {
 	_ = x
 }
 `)
-	if _, _, ok := FindSQL(src, line, char); ok {
+	if _, _, ok := FindSQL(src, line, char, DefaultSQLFunctions()); ok {
 		t.Error("want ok=false outside string")
 	}
 }
@@ -115,7 +115,7 @@ func TestFindSQL_MultibyteOnSameLine(t *testing.T) {
 	// Marker required; verify UTF-16 position translation still works.
 	src := []byte("package main\n\nfunc main() {\n\t// language=sql\n\tq := `SELECT 🎉 FROM users`\n}\n")
 	// Line 4 (0-indexed), UTF-16 char 15 = right after 🎉
-	sql, off, ok := FindSQL(src, 4, 15)
+	sql, off, ok := FindSQL(src, 4, 15, DefaultSQLFunctions())
 	if !ok {
 		t.Fatal("want ok=true")
 	}
@@ -126,11 +126,196 @@ func TestFindSQL_MultibyteOnSameLine(t *testing.T) {
 
 func TestFindAllSQL_OnlyMarked(t *testing.T) {
 	src := []byte("package main\n\nfunc main() {\n\t// language=sql\n\tq1 := `SELECT * FROM users`\n\tq2 := `SELECT * FROM orders`\n\t_, _ = q1, q2\n}\n")
-	blocks := FindAllSQL(src)
+	blocks := FindAllSQL(src, DefaultSQLFunctions())
 	if len(blocks) != 1 {
 		t.Fatalf("want 1 marked block, got %d", len(blocks))
 	}
 	if !strings.Contains(blocks[0].SQL, "users") {
 		t.Errorf("got %q", blocks[0].SQL)
+	}
+}
+
+func TestFindSQL_FunctionCallArg(t *testing.T) {
+	src, line, char := cursorAt(t, `package main
+
+import "database/sql"
+
+func main(db *sql.DB) {
+	_, _ = db.Query(`+"`SELECT id<|> FROM users`"+`)
+}
+`)
+	sql, off, ok := FindSQL(src, line, char, DefaultSQLFunctions())
+	if !ok {
+		t.Fatal("want ok=true; db.Query arg should be recognized")
+	}
+	if got := sql[:off]; got != "SELECT id" {
+		t.Errorf("sql[:off]=%q, want %q", got, "SELECT id")
+	}
+}
+
+func TestFindSQL_EmptyFuncsDisablesCallDetection(t *testing.T) {
+	src, line, char := cursorAt(t, `package main
+
+import "database/sql"
+
+func main(db *sql.DB) {
+	_, _ = db.Query(`+"`SELECT id<|> FROM users`"+`)
+}
+`)
+	if _, _, ok := FindSQL(src, line, char, SQLFunctions{}); ok {
+		t.Error("want ok=false: empty function set must disable function-call detection")
+	}
+}
+
+func TestFindSQL_UnknownFunctionIgnored(t *testing.T) {
+	src, line, char := cursorAt(t, `package main
+
+func main() {
+	_ = somethingElse(`+"`SELECT id<|> FROM users`"+`)
+}
+
+func somethingElse(s string) string { return s }
+`)
+	if _, _, ok := FindSQL(src, line, char, DefaultSQLFunctions()); ok {
+		t.Error("want ok=false: somethingElse isn't in the SQL function list")
+	}
+}
+
+func TestFindSQL_LiteralValueArgIsNotSQL(t *testing.T) {
+	// db.Exec's second arg is a value bound to $1, not another SQL
+	// fragment; the cursor on the second literal must not enter the
+	// SQL pipeline.
+	src, line, char := cursorAt(t, `package main
+
+import "database/sql"
+
+func main(db *sql.DB) {
+	_, _ = db.Exec(`+"`INSERT INTO users (email) VALUES ($1)`"+`, "literal<|>_value")
+}
+`)
+	if _, _, ok := FindSQL(src, line, char, DefaultSQLFunctions()); ok {
+		t.Error("want ok=false: the second string literal is a value, not SQL")
+	}
+}
+
+func TestFindSQL_VariableQueryWithLiteralParam(t *testing.T) {
+	// db.QueryContext(ctx, q, "param"): q is a variable so the SQL
+	// slot (arg 1) isn't a literal — "param" sits in arg 2 and must
+	// stay invisible to pgls regardless.
+	src, line, char := cursorAt(t, `package main
+
+import (
+	"context"
+	"database/sql"
+)
+
+func main(ctx context.Context, db *sql.DB, q string) {
+	_, _ = db.QueryContext(ctx, q, "lit<|>eral_param")
+}
+`)
+	if _, _, ok := FindSQL(src, line, char, DefaultSQLFunctions()); ok {
+		t.Error("want ok=false: SQL slot was a non-literal, the literal param mustn't be flagged")
+	}
+}
+
+func TestFindSQL_GenericInstantiation(t *testing.T) {
+	// Generic function instantiation: `db.Query[int](\`SELECT ...\`)`
+	// parses with CallExpr.Fun = *ast.IndexExpr, so callFuncName has
+	// to unwrap before reaching the SelectorExpr.
+	src, line, char := cursorAt(t, `package main
+
+func main() {
+	var db someGenericDB
+	_ = db.Query[int](`+"`SELECT id<|> FROM users`"+`)
+}
+
+type someGenericDB struct{}
+
+func (someGenericDB) Query[T any](q string) T { var z T; return z }
+`)
+	sql, off, ok := FindSQL(src, line, char, DefaultSQLFunctions())
+	if !ok {
+		t.Fatal("want ok=true: db.Query[int] should still match Query")
+	}
+	if got := sql[:off]; got != "SELECT id" {
+		t.Errorf("sql[:off]=%q, want %q", got, "SELECT id")
+	}
+}
+
+func TestFindSQL_QueryContextLiteralAtArgOne(t *testing.T) {
+	// Sanity check the *Context variant when the SQL is a literal.
+	src, line, char := cursorAt(t, `package main
+
+import (
+	"context"
+	"database/sql"
+)
+
+func main(ctx context.Context, db *sql.DB) {
+	_, _ = db.QueryContext(ctx, `+"`SELECT id<|> FROM users`"+`)
+}
+`)
+	sql, off, ok := FindSQL(src, line, char, DefaultSQLFunctions())
+	if !ok {
+		t.Fatal("want ok=true: QueryContext arg 1 is the SQL")
+	}
+	if got := sql[:off]; got != "SELECT id" {
+		t.Errorf("sql[:off]=%q, want %q", got, "SELECT id")
+	}
+}
+
+func TestFindSQL_UnqualifiedCallIgnored(t *testing.T) {
+	// `Query("...")` (a same-package function call rather than a
+	// method) must NOT match the default SQL function list — the
+	// configured names are method-style, and matching unqualified
+	// idents would let any same-package `Query` accidentally trigger
+	// SQL handling.
+	src, line, char := cursorAt(t, `package main
+
+func main() {
+	_ = Query(`+"`SELECT id<|> FROM users`"+`)
+}
+
+func Query(s string) string { return s }
+`)
+	if _, _, ok := FindSQL(src, line, char, DefaultSQLFunctions()); ok {
+		t.Error("want ok=false: unqualified Query() must not match")
+	}
+}
+
+func TestFindSQL_ParenthesizedArg(t *testing.T) {
+	// `db.Query((`SELECT ...`))` parses with the literal wrapped in
+	// *ast.ParenExpr. unwrapParens peels that off so the parenthesized
+	// form is treated identically to the bare literal.
+	src, line, char := cursorAt(t, `package main
+
+import "database/sql"
+
+func main(db *sql.DB) {
+	_, _ = db.Query((`+"`SELECT id<|> FROM users`"+`))
+}
+`)
+	sql, off, ok := FindSQL(src, line, char, DefaultSQLFunctions())
+	if !ok {
+		t.Fatal("want ok=true: parenthesized literal in query slot should still match")
+	}
+	if got := sql[:off]; got != "SELECT id" {
+		t.Errorf("sql[:off]=%q, want %q", got, "SELECT id")
+	}
+}
+
+func TestFindAllSQL_FunctionCalls(t *testing.T) {
+	src := []byte(`package main
+
+import "database/sql"
+
+func main(db *sql.DB) {
+	_, _ = db.Query(` + "`SELECT * FROM users`" + `)
+	_, _ = db.Exec(` + "`INSERT INTO orders VALUES (1)`" + `)
+}
+`)
+	blocks := FindAllSQL(src, DefaultSQLFunctions())
+	if len(blocks) != 2 {
+		t.Fatalf("want 2 SQL strings, got %d: %+v", len(blocks), blocks)
 	}
 }

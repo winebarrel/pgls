@@ -1,8 +1,10 @@
 package lsp
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"io/fs"
 	"log"
 	"net/url"
@@ -56,6 +58,10 @@ var (
 	// drops its work if the counter has advanced past its captured seq,
 	// so a backlog of stale diagnostics can never overwrite a newer one.
 	publishSeqs sync.Map // uri -> *atomic.Uint64
+
+	// sqlFuncsMu guards loadedSQLFuncs.
+	sqlFuncsMu      sync.RWMutex
+	loadedSQLFuncs  goast.SQLFunctions = goast.DefaultSQLFunctions()
 )
 
 func Run(cliSchemaDir string) error {
@@ -77,14 +83,40 @@ func Run(cliSchemaDir string) error {
 	return srv.RunStdio()
 }
 
-type initOptions struct {
-	SchemaDir string `json:"schemaDir"`
+// pglsConfig is the JSON shape of pgls's user-supplied configuration.
+// It carries every recognized field, and is used as-is for both the
+// `.pgls.json` workspace file and the LSP `initializationOptions`
+// payload — same shape, same validation rules. SQLFunctions is a
+// pointer so callers can distinguish "explicitly empty" (opt out of
+// function-call detection) from "field omitted" (use defaults).
+type pglsConfig struct {
+	SchemaDir    string              `json:"schemaDir"`
+	SQLFunctions *[]sqlFunctionEntry `json:"sqlFunctions"`
+}
+
+// sqlFunctionEntry is the JSON shape of one entry in the sqlFunctions
+// list. Name is matched against call expressions by selector, ArgIndex
+// is the 0-indexed positional argument that holds the SQL string.
+//
+// ArgIndex is a pointer so we can distinguish "explicitly 0" from
+// "field omitted" — a missing argIndex was previously decoded as 0
+// silently, which is wrong for *Context methods (their query lives at
+// arg 1) and produced confusing "pgls says nothing about my SQL"
+// behavior. A nil ArgIndex is now flagged at validation time.
+type sqlFunctionEntry struct {
+	Name     string `json:"name"`
+	ArgIndex *int   `json:"argIndex"`
 }
 
 func initialize(ctx *glsp.Context, params *protocol.InitializeParams) (any, error) {
+	// Set notify before loading config so parse errors can surface via
+	// window/showMessage during this initialize handler.
 	notify = ctx.Notify
 
-	dir := schemaDirFromOptions(params)
+	fileCfg := loadConfigFile(params)
+	initCfg := initOptionsConfig(params)
+
+	dir := schemaDirFromOptionsWith(params, fileCfg, initCfg)
 	if dir == "" {
 		dir = cliDir
 	}
@@ -92,6 +124,7 @@ func initialize(ctx *glsp.Context, params *protocol.InitializeParams) (any, erro
 		loadAndSetSchema(dir)
 		startSchemaWatcher(dir)
 	}
+	setSQLFunctions(sqlFunctionsFromOptionsWith(fileCfg, initCfg))
 
 	caps := handler.CreateServerCapabilities()
 	caps.CompletionProvider = &protocol.CompletionOptions{
@@ -111,6 +144,104 @@ func initialize(ctx *glsp.Context, params *protocol.InitializeParams) (any, erro
 	}, nil
 }
 
+// decodeConfig strictly decodes a JSON payload into a pglsConfig.
+// "Strict" means:
+//   - unknown fields are rejected (a typo like `sqlFunktions` errors
+//     instead of silently dropping the user's intended config), and
+//   - trailing data after the first JSON value is rejected (a stray
+//     second object or accidental concatenation doesn't get silently
+//     ignored).
+func decodeConfig(b []byte) (*pglsConfig, error) {
+	dec := json.NewDecoder(bytes.NewReader(b))
+	dec.DisallowUnknownFields()
+	var cfg pglsConfig
+	if err := dec.Decode(&cfg); err != nil {
+		return nil, err
+	}
+	if err := dec.Decode(&struct{}{}); err != io.EOF {
+		// err here describes what the trailing bytes look like (a
+		// stray array, a malformed token, etc.) and is the most
+		// useful diagnostic we have. Wrap rather than discard.
+		if err == nil {
+			return nil, fmt.Errorf("unexpected data after JSON value")
+		}
+		return nil, fmt.Errorf("unexpected data after JSON value: %w", err)
+	}
+	return &cfg, nil
+}
+
+// loadConfigFile reads `.pgls.json` from the workspace root and
+// returns its parsed contents, or nil if the workspace root is unknown
+// or the file is missing. Decoding is strict — invalid JSON, wrong
+// types, AND unknown fields all yield nil plus a `window/showMessage`
+// error toast, so the user can see and fix the typo rather than
+// silently losing config to a misspelled key.
+func loadConfigFile(params *protocol.InitializeParams) *pglsConfig {
+	root := workspaceRoot(params)
+	if root == "" {
+		return nil
+	}
+	path := filepath.Join(root, ".pgls.json")
+	b, err := os.ReadFile(path)
+	if err != nil {
+		// ENOENT is the normal "no config file" path — silent. Any
+		// other error (permission denied, IO, broken symlink) means
+		// the file exists but pgls couldn't actually load it; surface
+		// that via window/showMessage so the editor user notices
+		// instead of seeing pgls quietly do nothing.
+		if !os.IsNotExist(err) {
+			msg := fmt.Sprintf("pgls: failed to read %s — %v", path, err)
+			log.Print(msg)
+			showError(msg)
+		}
+		return nil
+	}
+	cfg, err := decodeConfig(b)
+	if err != nil {
+		msg := fmt.Sprintf("pgls: failed to parse %s — %v", path, err)
+		log.Print(msg)
+		showError(msg)
+		return nil
+	}
+	return cfg
+}
+
+// initOptionsConfig parses params.InitializationOptions into a
+// pglsConfig. Returns nil when init options are absent, JSON-encoding
+// fails, or strict decoding fails (unknown field, wrong type, etc.).
+// Decode failures surface via window/showMessage so a typo in editor
+// settings is visible rather than producing an inert pgls.
+func initOptionsConfig(params *protocol.InitializeParams) *pglsConfig {
+	if params.InitializationOptions == nil {
+		return nil
+	}
+	b, err := json.Marshal(params.InitializationOptions)
+	if err != nil {
+		return nil
+	}
+	cfg, err := decodeConfig(b)
+	if err != nil {
+		msg := fmt.Sprintf("pgls: failed to parse initializationOptions — %v", err)
+		log.Print(msg)
+		showError(msg)
+		return nil
+	}
+	return cfg
+}
+
+// showError sends an error-level window/showMessage to the editor.
+// It's a no-op when notify is unset (e.g. inside tests), so callers
+// can fire it unconditionally.
+func showError(msg string) {
+	if notify == nil {
+		return
+	}
+	notify(protocol.ServerWindowShowMessage, &protocol.ShowMessageParams{
+		Type:    protocol.MessageTypeError,
+		Message: msg,
+	})
+}
+
 // schemaDirFromOptions resolves the schema directory. A project-local
 // .pgls.json at the workspace root wins over LSP initializationOptions
 // — the config file is committed alongside the code, so it's the
@@ -119,60 +250,34 @@ func initialize(ctx *glsp.Context, params *protocol.InitializeParams) (any, erro
 // present. Returning "" leaves the caller to fall back to the CLI
 // flag (or to leave the schema unloaded).
 func schemaDirFromOptions(params *protocol.InitializeParams) string {
-	if dir := schemaDirFromConfigFile(params); dir != "" {
+	return schemaDirFromOptionsWith(params, loadConfigFile(params), initOptionsConfig(params))
+}
+
+func schemaDirFromOptionsWith(params *protocol.InitializeParams, fileCfg, initCfg *pglsConfig) string {
+	if dir := schemaDirFromConfigFile(params, fileCfg); dir != "" {
 		return dir
 	}
-	return schemaDirFromInitOptions(params)
+	if initCfg == nil {
+		return ""
+	}
+	return resolveSchemaDir(initCfg.SchemaDir, workspaceRoot(params))
 }
 
-func schemaDirFromInitOptions(params *protocol.InitializeParams) string {
-	if params.InitializationOptions == nil {
-		return ""
-	}
-	b, err := json.Marshal(params.InitializationOptions)
-	if err != nil {
-		return ""
-	}
-	var opts initOptions
-	if err := json.Unmarshal(b, &opts); err != nil {
-		return ""
-	}
-	return resolveSchemaDir(opts.SchemaDir, workspaceRoot(params))
-}
-
-// schemaDirFromConfigFile looks for `.pgls.json` at the workspace root
-// and parses its `schemaDir` field. Editors that don't have a clean way
-// to pass initializationOptions (classic Vim, plain CLI usage) can drop
-// this file in the project so pgls picks it up automatically.
-//
-// Because the config file is checked into the repository, the
+// schemaDirFromConfigFile validates and resolves the schemaDir from a
+// pre-loaded `.pgls.json`. Returns "" when cfg is nil or the field is
+// unset. Because the config file is checked into the repository, the
 // schemaDir it carries is constrained to a path inside the workspace
 // — absolute paths and ".." escapes are rejected so an unfamiliar
 // repo can't make pgls walk and surface arbitrary `.sql` files
 // elsewhere on disk. The CLI flag and initializationOptions paths
-// stay unrestricted because the user (or their editor config)
-// supplies them explicitly.
-func schemaDirFromConfigFile(params *protocol.InitializeParams) string {
+// stay unrestricted because the user (or their editor config) supplies
+// them explicitly.
+func schemaDirFromConfigFile(params *protocol.InitializeParams, cfg *pglsConfig) string {
+	if cfg == nil || cfg.SchemaDir == "" {
+		return ""
+	}
 	root := workspaceRoot(params)
-	if root == "" {
-		return ""
-	}
 	path := filepath.Join(root, ".pgls.json")
-	b, err := os.ReadFile(path)
-	if err != nil {
-		if !os.IsNotExist(err) {
-			log.Printf("read %s: %v", path, err)
-		}
-		return ""
-	}
-	var cfg initOptions
-	if err := json.Unmarshal(b, &cfg); err != nil {
-		log.Printf("parse %s: %v", path, err)
-		return ""
-	}
-	if cfg.SchemaDir == "" {
-		return ""
-	}
 	if filepath.IsAbs(cfg.SchemaDir) {
 		log.Printf("%s: absolute schemaDir %q rejected (must be inside workspace)", path, cfg.SchemaDir)
 		return ""
@@ -197,6 +302,81 @@ func resolveSchemaDir(dir, root string) string {
 		return filepath.Join(root, dir)
 	}
 	return dir
+}
+
+// sqlFunctionsFromOptions returns the user-configured SQL-function
+// list, or nil if no configuration is present (caller falls back to
+// goast.DefaultSQLFunctions). .pgls.json wins over initializationOptions
+// — same precedence as schemaDir.
+//
+// The returned slice may be empty; an explicit empty array opts out of
+// function-call detection so only the language=sql marker fires.
+func sqlFunctionsFromOptions(params *protocol.InitializeParams) []sqlFunctionEntry {
+	return sqlFunctionsFromOptionsWith(loadConfigFile(params), initOptionsConfig(params))
+}
+
+func sqlFunctionsFromOptionsWith(fileCfg, initCfg *pglsConfig) []sqlFunctionEntry {
+	if fileCfg != nil && fileCfg.SQLFunctions != nil {
+		return *fileCfg.SQLFunctions
+	}
+	if initCfg != nil && initCfg.SQLFunctions != nil {
+		return *initCfg.SQLFunctions
+	}
+	return nil
+}
+
+
+// setSQLFunctions installs the active SQL-function set.
+//   - nil funcs reverts to DefaultSQLFunctions.
+//   - An empty slice (`[]`) is the explicit "disable function-call
+//     detection" signal — only the language=sql marker fires.
+//   - Otherwise each entry is validated (non-empty Name, non-negative
+//     ArgIndex). Invalid entries are logged. If every entry is invalid
+//     we fall back to defaults and surface a window/showMessage so the
+//     user knows their config is wrong, rather than silently ending up
+//     with detection disabled.
+func setSQLFunctions(funcs []sqlFunctionEntry) {
+	sqlFuncsMu.Lock()
+	defer sqlFuncsMu.Unlock()
+	if funcs == nil {
+		loadedSQLFuncs = goast.DefaultSQLFunctions()
+		return
+	}
+	set := make(goast.SQLFunctions, len(funcs))
+	invalid := 0
+	for _, e := range funcs {
+		if e.Name == "" || e.ArgIndex == nil || *e.ArgIndex < 0 {
+			invalid++
+			log.Printf("sqlFunctions: ignoring invalid entry %+v", e)
+			continue
+		}
+		set[e.Name] = *e.ArgIndex
+	}
+	if invalid > 0 && len(set) == 0 {
+		// Every entry was rejected — distinguish this from `[]` (which
+		// is the explicit-disable signal) by falling back to defaults
+		// and telling the user.
+		msg := fmt.Sprintf("pgls: every sqlFunctions entry was invalid (%d ignored); falling back to defaults", invalid)
+		log.Print(msg)
+		showError(msg)
+		loadedSQLFuncs = goast.DefaultSQLFunctions()
+		return
+	}
+	loadedSQLFuncs = set
+}
+
+func currentSQLFuncs() goast.SQLFunctions {
+	sqlFuncsMu.RLock()
+	defer sqlFuncsMu.RUnlock()
+	// goast.SQLFunctions is a map (reference type); returning the
+	// underlying map would let any caller mutate shared state outside
+	// of sqlFuncsMu. Hand back a fresh copy so each request gets an
+	// independent snapshot.
+	cp := make(goast.SQLFunctions, len(loadedSQLFuncs))
+	for k, v := range loadedSQLFuncs {
+		cp[k] = v
+	}
+	return cp
 }
 
 func workspaceRoot(params *protocol.InitializeParams) string {
@@ -432,7 +612,7 @@ func publishDiagnostics(uri string) {
 	diags := []protocol.Diagnostic{}
 
 	if strings.HasSuffix(uri, ".go") {
-		for _, blk := range goast.FindAllSQL(src) {
+		for _, blk := range goast.FindAllSQL(src, currentSQLFuncs()) {
 			for _, iss := range sqlctx.Lint(blk.SQL, s) {
 				diags = append(diags, makeDiagnostic(src, blk.StartByte+iss.Start, blk.StartByte+iss.End, iss.Message))
 			}
@@ -483,7 +663,7 @@ func completion(_ *glsp.Context, params *protocol.CompletionParams) (any, error)
 	line, char := int(params.Position.Line), int(params.Position.Character)
 
 	if strings.HasSuffix(uri, ".go") {
-		s, o, ok := goast.FindSQL([]byte(text), line, char)
+		s, o, ok := goast.FindSQL([]byte(text), line, char, currentSQLFuncs())
 		if !ok {
 			return []protocol.CompletionItem{}, nil
 		}
@@ -652,7 +832,7 @@ func documentLink(_ *glsp.Context, params *protocol.DocumentLinkParams) ([]proto
 		}
 	}
 	if strings.HasSuffix(uri, ".go") {
-		for _, blk := range goast.FindAllSQL(src) {
+		for _, blk := range goast.FindAllSQL(src, currentSQLFuncs()) {
 			appendBlock(blk.SQL, blk.StartByte)
 		}
 	} else {
@@ -707,7 +887,7 @@ func definition(_ *glsp.Context, params *protocol.DefinitionParams) (any, error)
 	line, char := int(params.Position.Line), int(params.Position.Character)
 
 	if strings.HasSuffix(uri, ".go") {
-		s, o, ok := goast.FindSQL([]byte(text), line, char)
+		s, o, ok := goast.FindSQL([]byte(text), line, char, currentSQLFuncs())
 		if !ok {
 			return nil, nil
 		}
@@ -792,7 +972,7 @@ func hover(_ *glsp.Context, params *protocol.HoverParams) (*protocol.Hover, erro
 	line, char := int(params.Position.Line), int(params.Position.Character)
 
 	if strings.HasSuffix(uri, ".go") {
-		s, o, ok := goast.FindSQL([]byte(text), line, char)
+		s, o, ok := goast.FindSQL([]byte(text), line, char, currentSQLFuncs())
 		if !ok {
 			return nil, nil
 		}

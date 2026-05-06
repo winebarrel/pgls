@@ -207,13 +207,23 @@ func callSQLPositions(file *ast.File, funcs SQLFunctions) map[token.Pos]bool {
 }
 
 func callFuncName(fun ast.Expr) string {
-	switch fn := fun.(type) {
-	case *ast.Ident:
-		return fn.Name
-	case *ast.SelectorExpr:
-		return fn.Sel.Name
+	// Unwrap generic instantiations — `pkg.Query[T](...)` parses with
+	// fun = *ast.IndexExpr, and `pkg.Query[T, U](...)` with
+	// *ast.IndexListExpr — to reach the underlying ident/selector.
+	for {
+		switch fn := fun.(type) {
+		case *ast.IndexExpr:
+			fun = fn.X
+		case *ast.IndexListExpr:
+			fun = fn.X
+		case *ast.Ident:
+			return fn.Name
+		case *ast.SelectorExpr:
+			return fn.Sel.Name
+		default:
+			return ""
+		}
 	}
-	return ""
 }
 
 // hasSQLMarker reports whether s (a comment group's joined text)

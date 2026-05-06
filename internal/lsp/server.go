@@ -137,10 +137,9 @@ type configFile struct {
 
 // loadConfigFile reads `.pgls.json` from the workspace root and
 // returns its parsed contents, or nil if the workspace root is unknown,
-// the file is missing, or parsing fails. Read and parse errors (other
-// than ENOENT) are logged. Callers cache the returned value across the
-// initialize handshake so we don't read the file twice and can't pick
-// up a half-written edit between reads.
+// the file is missing, or parsing fails outright. Each field is
+// unmarshalled in isolation, so a malformed sqlFunctions value doesn't
+// take schemaDir down with it (and vice versa).
 func loadConfigFile(params *protocol.InitializeParams) *configFile {
 	root := workspaceRoot(params)
 	if root == "" {
@@ -154,12 +153,24 @@ func loadConfigFile(params *protocol.InitializeParams) *configFile {
 		}
 		return nil
 	}
-	var cfg configFile
-	if err := json.Unmarshal(b, &cfg); err != nil {
-		log.Printf("parse %s: %v", path, err)
-		return nil
+	cfg := &configFile{}
+	var schemaOnly struct {
+		SchemaDir string `json:"schemaDir"`
 	}
-	return &cfg
+	if err := json.Unmarshal(b, &schemaOnly); err != nil {
+		log.Printf("parse %s schemaDir: %v", path, err)
+	} else {
+		cfg.SchemaDir = schemaOnly.SchemaDir
+	}
+	var fnsOnly struct {
+		SQLFunctions *[]sqlFunctionEntry `json:"sqlFunctions"`
+	}
+	if err := json.Unmarshal(b, &fnsOnly); err != nil {
+		log.Printf("parse %s sqlFunctions: %v", path, err)
+	} else {
+		cfg.SQLFunctions = fnsOnly.SQLFunctions
+	}
+	return cfg
 }
 
 // schemaDirFromOptions resolves the schema directory. A project-local
@@ -188,7 +199,12 @@ func schemaDirFromInitOptions(params *protocol.InitializeParams) string {
 	if err != nil {
 		return ""
 	}
-	var opts initOptions
+	// Parse only the schemaDir field so a malformed sqlFunctions value
+	// elsewhere in the same payload doesn't drag down a perfectly fine
+	// schemaDir.
+	var opts struct {
+		SchemaDir string `json:"schemaDir"`
+	}
 	if err := json.Unmarshal(b, &opts); err != nil {
 		return ""
 	}

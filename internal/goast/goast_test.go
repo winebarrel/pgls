@@ -218,6 +218,30 @@ func main(ctx context.Context, db *sql.DB, q string) {
 	}
 }
 
+func TestFindSQL_GenericInstantiation(t *testing.T) {
+	// Generic function instantiation: `db.Query[int](\`SELECT ...\`)`
+	// parses with CallExpr.Fun = *ast.IndexExpr, so callFuncName has
+	// to unwrap before reaching the SelectorExpr.
+	src, line, char := cursorAt(t, `package main
+
+func main() {
+	var db someGenericDB
+	_ = db.Query[int](`+"`SELECT id<|> FROM users`"+`)
+}
+
+type someGenericDB struct{}
+
+func (someGenericDB) Query[T any](q string) T { var z T; return z }
+`)
+	sql, off, ok := FindSQL(src, line, char, DefaultSQLFunctions())
+	if !ok {
+		t.Fatal("want ok=true: db.Query[int] should still match Query")
+	}
+	if got := sql[:off]; got != "SELECT id" {
+		t.Errorf("sql[:off]=%q, want %q", got, "SELECT id")
+	}
+}
+
 func TestFindSQL_QueryContextLiteralAtArgOne(t *testing.T) {
 	// Sanity check the *Context variant when the SQL is a literal.
 	src, line, char := cursorAt(t, `package main

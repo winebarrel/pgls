@@ -22,6 +22,10 @@ func writeConfig(t *testing.T, dir, contents string) {
 	require.NoError(t, os.WriteFile(filepath.Join(dir, ".pgls.json"), []byte(contents), 0o644))
 }
 
+// argIdx is a tiny helper for building *int values inline in test
+// fixtures, since sqlFunctionEntry.ArgIndex is now a pointer.
+func argIdx(i int) *int { return &i }
+
 func paramsFor(uri string, init any) *protocol.InitializeParams {
 	root := protocol.DocumentUri(uri)
 	return &protocol.InitializeParams{
@@ -240,7 +244,7 @@ func TestSQLFunctions_FromInitOptions(t *testing.T) {
 			{"name": "Bar", "argIndex": 1},
 		},
 	}))
-	assert.Equal(t, []sqlFunctionEntry{{Name: "Foo", ArgIndex: 0}, {Name: "Bar", ArgIndex: 1}}, got)
+	assert.Equal(t, []sqlFunctionEntry{{Name: "Foo", ArgIndex: argIdx(0)}, {Name: "Bar", ArgIndex: argIdx(1)}}, got)
 }
 
 func TestSQLFunctions_EmptyArrayDisables(t *testing.T) {
@@ -256,7 +260,7 @@ func TestSQLFunctions_ConfigFileBeatsInitOptions(t *testing.T) {
 	got := sqlFunctionsFromOptions(paramsFor(uri, map[string]any{
 		"sqlFunctions": []map[string]any{{"name": "FromInit", "argIndex": 0}},
 	}))
-	assert.Equal(t, []sqlFunctionEntry{{Name: "FromFile", ArgIndex: 0}}, got)
+	assert.Equal(t, []sqlFunctionEntry{{Name: "FromFile", ArgIndex: argIdx(0)}}, got)
 }
 
 func TestSetSQLFunctions_AllInvalidFallsBackToDefaults(t *testing.T) {
@@ -274,8 +278,9 @@ func TestSetSQLFunctions_AllInvalidFallsBackToDefaults(t *testing.T) {
 
 	captured := captureNotify(t)
 	setSQLFunctions([]sqlFunctionEntry{
-		{Name: "", ArgIndex: 0},
-		{Name: "Bad", ArgIndex: -1},
+		{Name: "", ArgIndex: argIdx(0)},
+		{Name: "Bad", ArgIndex: argIdx(-1)},
+		{Name: "MissingIdx"}, // ArgIndex omitted (nil) — also invalid
 	})
 
 	got := currentSQLFuncs()
@@ -287,6 +292,42 @@ func TestSetSQLFunctions_AllInvalidFallsBackToDefaults(t *testing.T) {
 	require.True(t, ok)
 	assert.Equal(t, protocol.MessageTypeError, p.Type)
 	assert.Contains(t, p.Message, "sqlFunctions")
+}
+
+func TestSetSQLFunctions_OmittedArgIndexIsInvalid(t *testing.T) {
+	// `[{"name": "QueryContext"}]` — argIndex omitted. Previously this
+	// silently decoded as 0, which is wrong for *Context methods (their
+	// query lives at arg 1). With ArgIndex as *int we can tell "not set"
+	// from "explicitly 0", so this entry is rejected at validation.
+	prev := loadedSQLFuncs
+	t.Cleanup(func() {
+		sqlFuncsMu.Lock()
+		loadedSQLFuncs = prev
+		sqlFuncsMu.Unlock()
+	})
+
+	captured := captureNotify(t)
+	setSQLFunctions([]sqlFunctionEntry{
+		{Name: "QueryContext"}, // ArgIndex nil
+	})
+
+	got := currentSQLFuncs()
+	assert.NotEmpty(t, got, "all-invalid set should fall back to defaults")
+	assert.Equal(t, 1, got["QueryContext"], "default's arg index for *Context is 1")
+	require.Len(t, *captured, 1)
+}
+
+func TestSQLFunctions_OmittedArgIndexParsedAsNil(t *testing.T) {
+	// Sanity check that the JSON decoder does what we think — a
+	// missing argIndex must surface as a nil pointer, not as a 0,
+	// otherwise the validation above can't tell the cases apart.
+	_, uri := makeWorkspaceRoot(t)
+	got := sqlFunctionsFromOptions(paramsFor(uri, map[string]any{
+		"sqlFunctions": []map[string]any{{"name": "Foo"}}, // no argIndex
+	}))
+	require.Len(t, got, 1)
+	assert.Nil(t, got[0].ArgIndex,
+		"omitted argIndex must decode as nil so validation can flag it")
 }
 
 func TestSetSQLFunctions_PartialInvalidUsesValid(t *testing.T) {
@@ -302,8 +343,8 @@ func TestSetSQLFunctions_PartialInvalidUsesValid(t *testing.T) {
 
 	captured := captureNotify(t)
 	setSQLFunctions([]sqlFunctionEntry{
-		{Name: "Good", ArgIndex: 0},
-		{Name: "", ArgIndex: 0}, // invalid — silently dropped
+		{Name: "Good", ArgIndex: argIdx(0)},
+		{Name: "", ArgIndex: argIdx(0)}, // invalid — silently dropped
 	})
 
 	got := currentSQLFuncs()

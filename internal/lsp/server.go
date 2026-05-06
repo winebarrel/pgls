@@ -97,9 +97,15 @@ type pglsConfig struct {
 // sqlFunctionEntry is the JSON shape of one entry in the sqlFunctions
 // list. Name is matched against call expressions by selector, ArgIndex
 // is the 0-indexed positional argument that holds the SQL string.
+//
+// ArgIndex is a pointer so we can distinguish "explicitly 0" from
+// "field omitted" — a missing argIndex was previously decoded as 0
+// silently, which is wrong for *Context methods (their query lives at
+// arg 1) and produced confusing "pgls says nothing about my SQL"
+// behavior. A nil ArgIndex is now flagged at validation time.
 type sqlFunctionEntry struct {
 	Name     string `json:"name"`
-	ArgIndex int    `json:"argIndex"`
+	ArgIndex *int   `json:"argIndex"`
 }
 
 func initialize(ctx *glsp.Context, params *protocol.InitializeParams) (any, error) {
@@ -326,12 +332,12 @@ func setSQLFunctions(funcs []sqlFunctionEntry) {
 	set := make(goast.SQLFunctions, len(funcs))
 	invalid := 0
 	for _, e := range funcs {
-		if e.Name == "" || e.ArgIndex < 0 {
+		if e.Name == "" || e.ArgIndex == nil || *e.ArgIndex < 0 {
 			invalid++
 			log.Printf("sqlFunctions: ignoring invalid entry %+v", e)
 			continue
 		}
-		set[e.Name] = e.ArgIndex
+		set[e.Name] = *e.ArgIndex
 	}
 	if invalid > 0 && len(set) == 0 {
 		// Every entry was rejected — distinguish this from `[]` (which

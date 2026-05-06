@@ -195,7 +195,7 @@ func callSQLPositions(file *ast.File, funcs SQLFunctions) map[token.Pos]bool {
 		if !ok || idx < 0 || idx >= len(call.Args) {
 			return true
 		}
-		if lit, ok := call.Args[idx].(*ast.BasicLit); ok && lit.Kind == token.STRING {
+		if lit, ok := unwrapParens(call.Args[idx]).(*ast.BasicLit); ok && lit.Kind == token.STRING {
 			out[lit.Pos()] = true
 		}
 		return true
@@ -203,14 +203,33 @@ func callSQLPositions(file *ast.File, funcs SQLFunctions) map[token.Pos]bool {
 	return out
 }
 
-// callFuncName returns the method name for a method-style call like
-// `db.Query(...)`, or "" otherwise. Bare-identifier calls (e.g. a
-// same-package `Query("...")` helper) are deliberately excluded —
-// pgls configures function names without a receiver, so matching
-// unqualified idents would let an unrelated `Query` defined elsewhere
-// in the same package accidentally trigger SQL handling. Generic
-// instantiations of method calls (`pkg.Query[T](...)` → *ast.IndexExpr,
-// `pkg.Query[T,U](...)` → *ast.IndexListExpr) are unwrapped so they
+// unwrapParens peels off any number of *ast.ParenExpr wrappers so a
+// literal written as `db.Query((`SELECT ...`))` is still recognised as
+// a string literal in the query slot.
+func unwrapParens(e ast.Expr) ast.Expr {
+	for {
+		p, ok := e.(*ast.ParenExpr)
+		if !ok {
+			return e
+		}
+		e = p.X
+	}
+}
+
+// callFuncName returns the trailing identifier of a selector-style
+// call expression (e.g. `db.Query(...)` → "Query", `pkg.Query(...)` →
+// "Query"), or "" otherwise. Without type information pgls can't
+// distinguish a method call from a package-qualified function call —
+// both parse as *ast.SelectorExpr — so it matches both forms by name.
+// In practice this is fine: configured names are matched without a
+// receiver, so a configured "Query" lawfully covers both `db.Query`
+// and `somepkg.Query`.
+//
+// Bare-identifier calls (a same-package `Query("...")` helper) are
+// deliberately excluded; matching them would let an unrelated `Query`
+// defined elsewhere in the same package accidentally trigger SQL
+// handling. Generic instantiations (`x.Query[T](...)` → *ast.IndexExpr,
+// `x.Query[T,U](...)` → *ast.IndexListExpr) are unwrapped so they
 // still match.
 func callFuncName(fun ast.Expr) string {
 	for {

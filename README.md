@@ -33,6 +33,26 @@ root):
 { "initializationOptions": { "schemaDir": "db/schema" } }
 ```
 
+If the editor doesn't expose a clean way to pass `initializationOptions`
+(classic Vim, plain CLI), drop a `.pgls.json` at the workspace root and
+pgls will pick it up automatically:
+
+```json
+{ "schemaDir": "db/schema" }
+```
+
+When both are present, a non-empty `initializationOptions.schemaDir`
+wins. An empty value (`""`) or absent field falls through to
+`.pgls.json` — JSON can't reliably distinguish "explicitly empty"
+from "omitted" in a plain string field, so empty is treated as
+"not provided" rather than "disable schema loading".
+
+The `schemaDir` field of `.pgls.json` must resolve to a path inside
+the workspace — absolute paths and `..` escapes are rejected, so
+cloning an unfamiliar repo can't make pgls walk arbitrary `.sql`
+files elsewhere on disk. The `-schema` CLI flag stays unrestricted
+because the user supplies it explicitly.
+
 ## Editor setup
 
 ### Neovim (built-in LSP)

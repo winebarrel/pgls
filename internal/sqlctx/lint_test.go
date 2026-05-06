@@ -299,12 +299,23 @@ func TestLint_AliasesFromNonQueryDontLeak(t *testing.T) {
 	}
 }
 
-func TestLint_ExplainSelectStillLinted(t *testing.T) {
-	// `EXPLAIN SELECT ...` is in the allow-list, so the inner SELECT
-	// still gets validated.
+func TestLint_ExplainPrefixedStatementsAreSkipped(t *testing.T) {
+	// EXPLAIN is intentionally NOT in the allow-list. PostgreSQL
+	// accepts EXPLAIN on non-query preparable statements too —
+	// `EXPLAIN CREATE TABLE foo AS SELECT ...` is valid, and
+	// linting it would re-introduce the schema-name false
+	// positive this PR is trying to suppress. The trade-off is
+	// that ad-hoc `EXPLAIN SELECT ...` files won't get pgls
+	// diagnostics either; we accept that.
 	s := makeSchema()
-	got := Lint(`EXPLAIN SELECT * FROM bogus`, s)
-	if len(got) != 1 || !strings.Contains(got[0].Message, "bogus") {
-		t.Errorf("EXPLAIN should still surface inner-query typos: %v", issueMessages(got))
+	cases := []string{
+		`EXPLAIN SELECT * FROM bogus`,
+		`EXPLAIN ANALYZE SELECT * FROM bogus`,
+		`EXPLAIN CREATE TABLE public.foo AS SELECT * FROM users`,
+	}
+	for _, sql := range cases {
+		if got := Lint(sql, s); len(got) != 0 {
+			t.Errorf("%q: EXPLAIN-prefixed statement should be skipped, got %v", sql, issueMessages(got))
+		}
 	}
 }

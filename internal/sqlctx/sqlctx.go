@@ -230,7 +230,15 @@ func extractQueryStatementTables(tokens []token) *tablesInfo {
 //   - SELECT / INSERT / UPDATE / DELETE / MERGE — core DML.
 //   - WITH — always feeds one of the above.
 //   - VALUES — top-level value list, harmless to lint.
-//   - EXPLAIN — wraps another statement; lint sees through to it.
+//
+// EXPLAIN is deliberately excluded: PostgreSQL accepts EXPLAIN on
+// non-query "preparable statements" too (e.g.
+// `EXPLAIN CREATE TABLE foo AS SELECT ...`), so peeking through
+// the leading EXPLAIN without parsing its options would re-admit
+// the very false positives this allow-list removes. Skipping
+// EXPLAIN-prefixed statements means an ad-hoc `EXPLAIN SELECT ...`
+// won't get pgls's diagnostics either, but those files are rare
+// enough that the trade-off is in favour of correctness.
 //
 // Allow-listing rather than blocklisting DDL keeps pgls future-proof:
 // query verbs are small and stable, while DDL gets new verbs across
@@ -239,7 +247,7 @@ func extractQueryStatementTables(tokens []token) *tablesInfo {
 func isQueryLeadingKeyword(s string) bool {
 	switch strings.ToUpper(s) {
 	case "SELECT", "INSERT", "UPDATE", "DELETE", "MERGE",
-		"WITH", "VALUES", "EXPLAIN":
+		"WITH", "VALUES":
 		return true
 	}
 	return false

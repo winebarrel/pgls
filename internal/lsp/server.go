@@ -729,7 +729,7 @@ func completion(_ *glsp.Context, params *protocol.CompletionParams) (any, error)
 func contextItems(s *schema.Schema, ctx sqlctx.Context) []protocol.CompletionItem {
 	switch ctx.State {
 	case sqlctx.StateTable:
-		return tableItems(s)
+		return append(tableItems(s), keywordItems()...)
 	case sqlctx.StateQualifiedColumn:
 		realName, ok := ctx.Aliases[ctx.Qualifier]
 		if !ok {
@@ -740,13 +740,17 @@ func contextItems(s *schema.Schema, ctx sqlctx.Context) []protocol.CompletionIte
 		}
 		return nil
 	case sqlctx.StateColumn:
+		var items []protocol.CompletionItem
 		if len(ctx.FromTables) > 0 {
-			return scopedColumnItems(s, ctx.FromTables, ctx.Aliases)
+			items = scopedColumnItems(s, ctx.FromTables, ctx.Aliases)
+		} else {
+			items = scopedColumnItems(s, allTableNames(s), nil)
 		}
-		return scopedColumnItems(s, allTableNames(s), nil)
+		return append(items, keywordItems()...)
 	default:
 		items := tableItems(s)
 		items = append(items, scopedColumnItems(s, allTableNames(s), nil)...)
+		items = append(items, keywordItems()...)
 		return items
 	}
 }
@@ -1138,6 +1142,40 @@ func columnItems(t *schema.Table) []protocol.CompletionItem {
 			Label:  c.Name,
 			Kind:   &kind,
 			Detail: &detail,
+		})
+	}
+	return items
+}
+
+// sqlKeywords is a small, intentionally non-exhaustive set of SQL
+// keywords offered as completion candidates. The aim is "good enough"
+// for everyday queries — not full PostgreSQL grammar coverage.
+var sqlKeywords = []string{
+	"SELECT", "FROM", "WHERE", "AND", "OR", "NOT", "IN", "IS", "NULL",
+	"AS", "DISTINCT", "ALL", "EXISTS", "BETWEEN", "LIKE", "ILIKE",
+	"JOIN", "INNER JOIN", "LEFT JOIN", "RIGHT JOIN", "FULL JOIN",
+	"CROSS JOIN", "ON", "USING",
+	"GROUP BY", "ORDER BY", "HAVING", "LIMIT", "OFFSET",
+	"ASC", "DESC", "NULLS FIRST", "NULLS LAST",
+	"UNION", "UNION ALL", "INTERSECT", "EXCEPT",
+	"INSERT INTO", "VALUES", "RETURNING",
+	"UPDATE", "SET", "DELETE FROM", "TRUNCATE",
+	"WITH", "CASE", "WHEN", "THEN", "ELSE", "END",
+}
+
+func keywordItems() []protocol.CompletionItem {
+	kind := protocol.CompletionItemKindKeyword
+	detail := "keyword"
+	items := make([]protocol.CompletionItem, 0, len(sqlKeywords))
+	for _, kw := range sqlKeywords {
+		// "z" prefix sorts keywords after tables/columns in the popup
+		// while preserving stable relative order via the keyword text.
+		sort := "z" + kw
+		items = append(items, protocol.CompletionItem{
+			Label:    kw,
+			Kind:     &kind,
+			Detail:   &detail,
+			SortText: &sort,
 		})
 	}
 	return items

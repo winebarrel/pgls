@@ -7,6 +7,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/tliron/glsp"
 	protocol "github.com/tliron/glsp/protocol_3_16"
 )
 
@@ -97,6 +98,64 @@ func TestSchemaDir_InvalidJSONIgnored(t *testing.T) {
 	writeConfig(t, root, `not json`)
 	got := schemaDirFromOptions(paramsFor(uri, nil))
 	assert.Equal(t, "", got, "invalid JSON should not crash, just yield empty")
+}
+
+func TestLoadConfigFile_MalformedJSONShowsError(t *testing.T) {
+	// pgls is strict on malformed .pgls.json — if we silently fell back
+	// to defaults the user would see pgls "do nothing" with no obvious
+	// reason. window/showMessage surfaces the parse error to the editor
+	// so the typo is fixable instead of invisible.
+	root, uri := makeWorkspaceRoot(t)
+	writeConfig(t, root, `{"schemaDir": "db", "sqlFunctions": "not-an-array"}`)
+
+	captured := captureNotify(t)
+	require.Nil(t, loadConfigFile(paramsFor(uri, nil)),
+		"malformed .pgls.json must yield nil")
+
+	require.Len(t, *captured, 1)
+	assert.Equal(t, protocol.ServerWindowShowMessage, (*captured)[0].method)
+	p, ok := (*captured)[0].params.(*protocol.ShowMessageParams)
+	require.True(t, ok)
+	assert.Equal(t, protocol.MessageTypeError, p.Type)
+	assert.Contains(t, p.Message, ".pgls.json")
+	_ = root
+}
+
+func TestInitOptionsConfig_MalformedShowsError(t *testing.T) {
+	// Same idea for editor-supplied initializationOptions — a malformed
+	// payload (e.g. wrong type for sqlFunctions) is reported rather than
+	// silently dropped.
+	_, uri := makeWorkspaceRoot(t)
+
+	captured := captureNotify(t)
+	require.Nil(t, initOptionsConfig(paramsFor(uri, map[string]any{
+		"sqlFunctions": "not-an-array",
+	})))
+
+	require.Len(t, *captured, 1)
+	p, ok := (*captured)[0].params.(*protocol.ShowMessageParams)
+	require.True(t, ok)
+	assert.Equal(t, protocol.MessageTypeError, p.Type)
+	assert.Contains(t, p.Message, "initializationOptions")
+}
+
+type capturedNotify struct {
+	method string
+	params any
+}
+
+// captureNotify swaps the package-level notify for one that records
+// every call into the returned slice. The original notify is restored
+// when the test cleans up.
+func captureNotify(t *testing.T) *[]capturedNotify {
+	t.Helper()
+	prev := notify
+	t.Cleanup(func() { notify = prev })
+	out := &[]capturedNotify{}
+	notify = glsp.NotifyFunc(func(method string, params any) {
+		*out = append(*out, capturedNotify{method: method, params: params})
+	})
+	return out
 }
 
 func TestSchemaDir_EmptyInitOptionsFallsThroughToConfigFile(t *testing.T) {

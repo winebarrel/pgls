@@ -81,9 +81,15 @@ func Run(cliSchemaDir string) error {
 	return srv.RunStdio()
 }
 
-type initOptions struct {
-	SchemaDir    string             `json:"schemaDir"`
-	SQLFunctions []sqlFunctionEntry `json:"sqlFunctions"`
+// pglsConfig is the JSON shape of pgls's user-supplied configuration.
+// It carries every recognised field, and is used as-is for both the
+// `.pgls.json` workspace file and the LSP `initializationOptions`
+// payload — same shape, same validation rules. SQLFunctions is a
+// pointer so callers can distinguish "explicitly empty" (opt out of
+// function-call detection) from "field omitted" (use defaults).
+type pglsConfig struct {
+	SchemaDir    string              `json:"schemaDir"`
+	SQLFunctions *[]sqlFunctionEntry `json:"sqlFunctions"`
 }
 
 // sqlFunctionEntry is the JSON shape of one entry in the sqlFunctions
@@ -95,11 +101,14 @@ type sqlFunctionEntry struct {
 }
 
 func initialize(ctx *glsp.Context, params *protocol.InitializeParams) (any, error) {
+	// Set notify before loading config so parse errors can surface via
+	// window/showMessage during this initialize handler.
 	notify = ctx.Notify
 
-	cfg := loadConfigFile(params)
+	fileCfg := loadConfigFile(params)
+	initCfg := initOptionsConfig(params)
 
-	dir := schemaDirFromOptionsWith(params, cfg)
+	dir := schemaDirFromOptionsWith(params, fileCfg, initCfg)
 	if dir == "" {
 		dir = cliDir
 	}
@@ -107,7 +116,7 @@ func initialize(ctx *glsp.Context, params *protocol.InitializeParams) (any, erro
 		loadAndSetSchema(dir)
 		startSchemaWatcher(dir)
 	}
-	setSQLFunctions(sqlFunctionsFromOptionsWith(params, cfg))
+	setSQLFunctions(sqlFunctionsFromOptionsWith(fileCfg, initCfg))
 
 	caps := handler.CreateServerCapabilities()
 	caps.CompletionProvider = &protocol.CompletionOptions{
@@ -127,20 +136,13 @@ func initialize(ctx *glsp.Context, params *protocol.InitializeParams) (any, erro
 	}, nil
 }
 
-// configFile mirrors the JSON shape of `.pgls.json`. SQLFunctions is a
-// pointer so we can distinguish "explicitly empty" (opt out of
-// function-call detection) from "field omitted" (use defaults).
-type configFile struct {
-	SchemaDir    string              `json:"schemaDir"`
-	SQLFunctions *[]sqlFunctionEntry `json:"sqlFunctions"`
-}
-
 // loadConfigFile reads `.pgls.json` from the workspace root and
-// returns its parsed contents, or nil if the workspace root is unknown,
-// the file is missing, or parsing fails outright. Each field is
-// unmarshalled in isolation, so a malformed sqlFunctions value doesn't
-// take schemaDir down with it (and vice versa).
-func loadConfigFile(params *protocol.InitializeParams) *configFile {
+// returns its parsed contents, or nil if the workspace root is unknown
+// or the file is missing. A malformed file is parsed strictly — one
+// bad field invalidates the whole payload — so the user gets a single
+// `window/showMessage` toast and is prompted to fix the file rather
+// than silently losing one or more fields to a typo.
+func loadConfigFile(params *protocol.InitializeParams) *pglsConfig {
 	root := workspaceRoot(params)
 	if root == "" {
 		return nil
@@ -153,24 +155,50 @@ func loadConfigFile(params *protocol.InitializeParams) *configFile {
 		}
 		return nil
 	}
-	cfg := &configFile{}
-	var schemaOnly struct {
-		SchemaDir string `json:"schemaDir"`
+	var cfg pglsConfig
+	if err := json.Unmarshal(b, &cfg); err != nil {
+		msg := fmt.Sprintf("pgls: failed to parse %s — %v", path, err)
+		log.Print(msg)
+		showError(msg)
+		return nil
 	}
-	if err := json.Unmarshal(b, &schemaOnly); err != nil {
-		log.Printf("parse %s schemaDir: %v", path, err)
-	} else {
-		cfg.SchemaDir = schemaOnly.SchemaDir
+	return &cfg
+}
+
+// initOptionsConfig parses params.InitializationOptions into a
+// pglsConfig. Returns nil when init options are absent, JSON-encoding
+// fails, or the unmarshal fails outright. A malformed payload is
+// surfaced via window/showMessage so a typo in editor settings is
+// visible rather than producing an inert pgls.
+func initOptionsConfig(params *protocol.InitializeParams) *pglsConfig {
+	if params.InitializationOptions == nil {
+		return nil
 	}
-	var fnsOnly struct {
-		SQLFunctions *[]sqlFunctionEntry `json:"sqlFunctions"`
+	b, err := json.Marshal(params.InitializationOptions)
+	if err != nil {
+		return nil
 	}
-	if err := json.Unmarshal(b, &fnsOnly); err != nil {
-		log.Printf("parse %s sqlFunctions: %v", path, err)
-	} else {
-		cfg.SQLFunctions = fnsOnly.SQLFunctions
+	var cfg pglsConfig
+	if err := json.Unmarshal(b, &cfg); err != nil {
+		msg := fmt.Sprintf("pgls: failed to parse initializationOptions — %v", err)
+		log.Print(msg)
+		showError(msg)
+		return nil
 	}
-	return cfg
+	return &cfg
+}
+
+// showError sends an error-level window/showMessage to the editor.
+// It's a no-op when notify is unset (e.g. inside tests), so callers
+// can fire it unconditionally.
+func showError(msg string) {
+	if notify == nil {
+		return
+	}
+	notify(protocol.ServerWindowShowMessage, &protocol.ShowMessageParams{
+		Type:    protocol.MessageTypeError,
+		Message: msg,
+	})
 }
 
 // schemaDirFromOptions resolves the schema directory. A project-local
@@ -181,34 +209,17 @@ func loadConfigFile(params *protocol.InitializeParams) *configFile {
 // present. Returning "" leaves the caller to fall back to the CLI
 // flag (or to leave the schema unloaded).
 func schemaDirFromOptions(params *protocol.InitializeParams) string {
-	return schemaDirFromOptionsWith(params, loadConfigFile(params))
+	return schemaDirFromOptionsWith(params, loadConfigFile(params), initOptionsConfig(params))
 }
 
-func schemaDirFromOptionsWith(params *protocol.InitializeParams, cfg *configFile) string {
-	if dir := schemaDirFromConfigFile(params, cfg); dir != "" {
+func schemaDirFromOptionsWith(params *protocol.InitializeParams, fileCfg, initCfg *pglsConfig) string {
+	if dir := schemaDirFromConfigFile(params, fileCfg); dir != "" {
 		return dir
 	}
-	return schemaDirFromInitOptions(params)
-}
-
-func schemaDirFromInitOptions(params *protocol.InitializeParams) string {
-	if params.InitializationOptions == nil {
+	if initCfg == nil {
 		return ""
 	}
-	b, err := json.Marshal(params.InitializationOptions)
-	if err != nil {
-		return ""
-	}
-	// Parse only the schemaDir field so a malformed sqlFunctions value
-	// elsewhere in the same payload doesn't drag down a perfectly fine
-	// schemaDir.
-	var opts struct {
-		SchemaDir string `json:"schemaDir"`
-	}
-	if err := json.Unmarshal(b, &opts); err != nil {
-		return ""
-	}
-	return resolveSchemaDir(opts.SchemaDir, workspaceRoot(params))
+	return resolveSchemaDir(initCfg.SchemaDir, workspaceRoot(params))
 }
 
 // schemaDirFromConfigFile validates and resolves the schemaDir from a
@@ -220,7 +231,7 @@ func schemaDirFromInitOptions(params *protocol.InitializeParams) string {
 // elsewhere on disk. The CLI flag and initializationOptions paths
 // stay unrestricted because the user (or their editor config) supplies
 // them explicitly.
-func schemaDirFromConfigFile(params *protocol.InitializeParams, cfg *configFile) string {
+func schemaDirFromConfigFile(params *protocol.InitializeParams, cfg *pglsConfig) string {
 	if cfg == nil || cfg.SchemaDir == "" {
 		return ""
 	}
@@ -260,37 +271,17 @@ func resolveSchemaDir(dir, root string) string {
 // The returned slice may be empty; an explicit empty array opts out of
 // function-call detection so only the language=sql marker fires.
 func sqlFunctionsFromOptions(params *protocol.InitializeParams) []sqlFunctionEntry {
-	return sqlFunctionsFromOptionsWith(params, loadConfigFile(params))
+	return sqlFunctionsFromOptionsWith(loadConfigFile(params), initOptionsConfig(params))
 }
 
-func sqlFunctionsFromOptionsWith(params *protocol.InitializeParams, cfg *configFile) []sqlFunctionEntry {
-	if cfg != nil && cfg.SQLFunctions != nil {
-		return *cfg.SQLFunctions
+func sqlFunctionsFromOptionsWith(fileCfg, initCfg *pglsConfig) []sqlFunctionEntry {
+	if fileCfg != nil && fileCfg.SQLFunctions != nil {
+		return *fileCfg.SQLFunctions
 	}
-	if fns, ok := sqlFunctionsFromInitOptions(params); ok {
-		return fns
+	if initCfg != nil && initCfg.SQLFunctions != nil {
+		return *initCfg.SQLFunctions
 	}
 	return nil
-}
-
-func sqlFunctionsFromInitOptions(params *protocol.InitializeParams) ([]sqlFunctionEntry, bool) {
-	if params.InitializationOptions == nil {
-		return nil, false
-	}
-	b, err := json.Marshal(params.InitializationOptions)
-	if err != nil {
-		return nil, false
-	}
-	var raw struct {
-		SQLFunctions *[]sqlFunctionEntry `json:"sqlFunctions"`
-	}
-	if err := json.Unmarshal(b, &raw); err != nil {
-		return nil, false
-	}
-	if raw.SQLFunctions == nil {
-		return nil, false
-	}
-	return *raw.SQLFunctions, true
 }
 
 

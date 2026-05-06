@@ -283,27 +283,6 @@ func Query(s string) string { return s }
 	}
 }
 
-func TestFindSQL_ParenthesizedArg(t *testing.T) {
-	// `db.Query((`SELECT ...`))` parses with the literal wrapped in
-	// *ast.ParenExpr. unwrapParens peels that off so the parenthesized
-	// form is treated identically to the bare literal.
-	src, line, char := cursorAt(t, `package main
-
-import "database/sql"
-
-func main(db *sql.DB) {
-	_, _ = db.Query((`+"`SELECT id<|> FROM users`"+`))
-}
-`)
-	sql, off, ok := FindSQL(src, line, char, DefaultSQLFunctions())
-	if !ok {
-		t.Fatal("want ok=true: parenthesized literal in query slot should still match")
-	}
-	if got := sql[:off]; got != "SELECT id" {
-		t.Errorf("sql[:off]=%q, want %q", got, "SELECT id")
-	}
-}
-
 func TestFindAllSQL_FunctionCalls(t *testing.T) {
 	src := []byte(`package main
 

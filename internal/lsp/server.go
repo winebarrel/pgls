@@ -56,6 +56,10 @@ var (
 	// drops its work if the counter has advanced past its captured seq,
 	// so a backlog of stale diagnostics can never overwrite a newer one.
 	publishSeqs sync.Map // uri -> *atomic.Uint64
+
+	// sqlFuncsMu guards loadedSQLFuncs.
+	sqlFuncsMu      sync.RWMutex
+	loadedSQLFuncs  goast.SQLFunctions = goast.DefaultSQLFunctions()
 )
 
 func Run(cliSchemaDir string) error {
@@ -78,7 +82,8 @@ func Run(cliSchemaDir string) error {
 }
 
 type initOptions struct {
-	SchemaDir string `json:"schemaDir"`
+	SchemaDir    string   `json:"schemaDir"`
+	SQLFunctions []string `json:"sqlFunctions"`
 }
 
 func initialize(ctx *glsp.Context, params *protocol.InitializeParams) (any, error) {
@@ -92,6 +97,7 @@ func initialize(ctx *glsp.Context, params *protocol.InitializeParams) (any, erro
 		loadAndSetSchema(dir)
 		startSchemaWatcher(dir)
 	}
+	setSQLFunctions(sqlFunctionsFromOptions(params))
 
 	caps := handler.CreateServerCapabilities()
 	caps.CompletionProvider = &protocol.CompletionOptions{
@@ -197,6 +203,88 @@ func resolveSchemaDir(dir, root string) string {
 		return filepath.Join(root, dir)
 	}
 	return dir
+}
+
+// sqlFunctionsFromOptions returns the user-configured SQL-function
+// list, or nil if no configuration is present (caller falls back to
+// goast.DefaultSQLFunctions). .pgls.json wins over initializationOptions
+// — same precedence as schemaDir.
+//
+// The returned slice may be empty; an explicit empty array opts out of
+// function-call detection so only the language=sql marker fires.
+func sqlFunctionsFromOptions(params *protocol.InitializeParams) []string {
+	if fns, ok := sqlFunctionsFromConfigFile(params); ok {
+		return fns
+	}
+	if fns, ok := sqlFunctionsFromInitOptions(params); ok {
+		return fns
+	}
+	return nil
+}
+
+func sqlFunctionsFromInitOptions(params *protocol.InitializeParams) ([]string, bool) {
+	if params.InitializationOptions == nil {
+		return nil, false
+	}
+	b, err := json.Marshal(params.InitializationOptions)
+	if err != nil {
+		return nil, false
+	}
+	var raw struct {
+		SQLFunctions *[]string `json:"sqlFunctions"`
+	}
+	if err := json.Unmarshal(b, &raw); err != nil {
+		return nil, false
+	}
+	if raw.SQLFunctions == nil {
+		return nil, false
+	}
+	return *raw.SQLFunctions, true
+}
+
+func sqlFunctionsFromConfigFile(params *protocol.InitializeParams) ([]string, bool) {
+	root := workspaceRoot(params)
+	if root == "" {
+		return nil, false
+	}
+	b, err := os.ReadFile(filepath.Join(root, ".pgls.json"))
+	if err != nil {
+		return nil, false
+	}
+	var raw struct {
+		SQLFunctions *[]string `json:"sqlFunctions"`
+	}
+	if err := json.Unmarshal(b, &raw); err != nil {
+		return nil, false
+	}
+	if raw.SQLFunctions == nil {
+		return nil, false
+	}
+	return *raw.SQLFunctions, true
+}
+
+// setSQLFunctions installs the active SQL-function set. A nil argument
+// reverts to DefaultSQLFunctions; otherwise the caller's slice is used
+// verbatim — an empty slice disables function-call detection so only
+// the language=sql marker comment fires.
+func setSQLFunctions(funcs []string) {
+	sqlFuncsMu.Lock()
+	defer sqlFuncsMu.Unlock()
+	if funcs == nil {
+		loadedSQLFuncs = goast.DefaultSQLFunctions()
+		return
+	}
+	set := make(goast.SQLFunctions, len(funcs))
+	for _, n := range funcs {
+		set[n] = true
+	}
+	loadedSQLFuncs = set
+}
+
+func currentSQLFuncs() goast.SQLFunctions {
+	sqlFuncsMu.RLock()
+	defer sqlFuncsMu.RUnlock()
+	return loadedSQLFuncs
 }
 
 func workspaceRoot(params *protocol.InitializeParams) string {
@@ -432,7 +520,7 @@ func publishDiagnostics(uri string) {
 	diags := []protocol.Diagnostic{}
 
 	if strings.HasSuffix(uri, ".go") {
-		for _, blk := range goast.FindAllSQL(src) {
+		for _, blk := range goast.FindAllSQL(src, currentSQLFuncs()) {
 			for _, iss := range sqlctx.Lint(blk.SQL, s) {
 				diags = append(diags, makeDiagnostic(src, blk.StartByte+iss.Start, blk.StartByte+iss.End, iss.Message))
 			}
@@ -483,7 +571,7 @@ func completion(_ *glsp.Context, params *protocol.CompletionParams) (any, error)
 	line, char := int(params.Position.Line), int(params.Position.Character)
 
 	if strings.HasSuffix(uri, ".go") {
-		s, o, ok := goast.FindSQL([]byte(text), line, char)
+		s, o, ok := goast.FindSQL([]byte(text), line, char, currentSQLFuncs())
 		if !ok {
 			return []protocol.CompletionItem{}, nil
 		}
@@ -652,7 +740,7 @@ func documentLink(_ *glsp.Context, params *protocol.DocumentLinkParams) ([]proto
 		}
 	}
 	if strings.HasSuffix(uri, ".go") {
-		for _, blk := range goast.FindAllSQL(src) {
+		for _, blk := range goast.FindAllSQL(src, currentSQLFuncs()) {
 			appendBlock(blk.SQL, blk.StartByte)
 		}
 	} else {
@@ -707,7 +795,7 @@ func definition(_ *glsp.Context, params *protocol.DefinitionParams) (any, error)
 	line, char := int(params.Position.Line), int(params.Position.Character)
 
 	if strings.HasSuffix(uri, ".go") {
-		s, o, ok := goast.FindSQL([]byte(text), line, char)
+		s, o, ok := goast.FindSQL([]byte(text), line, char, currentSQLFuncs())
 		if !ok {
 			return nil, nil
 		}
@@ -792,7 +880,7 @@ func hover(_ *glsp.Context, params *protocol.HoverParams) (*protocol.Hover, erro
 	line, char := int(params.Position.Line), int(params.Position.Character)
 
 	if strings.HasSuffix(uri, ".go") {
-		s, o, ok := goast.FindSQL([]byte(text), line, char)
+		s, o, ok := goast.FindSQL([]byte(text), line, char, currentSQLFuncs())
 		if !ok {
 			return nil, nil
 		}

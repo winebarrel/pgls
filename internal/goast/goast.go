@@ -15,24 +15,59 @@ type SQLString struct {
 	StartByte int // byte offset of the inner SQL within the source
 }
 
-// FindAllSQL returns every string literal in src whose preceding line
-// carries a JetBrains-style `language=sql` (or `language=postgresql`)
-// marker comment. Used to drive whole-file analyses such as
-// diagnostics.
-func FindAllSQL(src []byte) []SQLString {
+// SQLFunctions is the set of Go function/method names whose string
+// literal arguments are interpreted as SQL. Method names are matched
+// without a receiver, so "Query" matches both `db.Query(...)` and
+// `tx.Query(...)`.
+type SQLFunctions = map[string]bool
+
+// DefaultSQLFunctions returns the database/sql DB / Tx methods that
+// take a query string. Callers can use this verbatim, extend it, or
+// supply their own set entirely (an empty set disables function-call
+// detection so only the language=sql marker comment fires).
+func DefaultSQLFunctions() SQLFunctions {
+	return SQLFunctions{
+		"Query":            true,
+		"QueryRow":         true,
+		"QueryContext":     true,
+		"QueryRowContext":  true,
+		"Exec":             true,
+		"ExecContext":      true,
+		"Prepare":          true,
+		"PrepareContext":   true,
+	}
+}
+
+// FindAllSQL returns every string literal in src that should be
+// treated as SQL, recognised by either:
+//   - a JetBrains-style `language=sql` / `language=postgresql` marker
+//     comment on the line directly above, or
+//   - being passed as an argument to a function/method whose name
+//     appears in funcs.
+//
+// Callers usually pass DefaultSQLFunctions(); empty or nil funcs
+// disables the function-call path so only marker comments are honoured.
+func FindAllSQL(src []byte, funcs SQLFunctions) []SQLString {
 	fset, file, marked := parseWithMarkers(src)
 	if file == nil {
 		return nil
 	}
+	inFunc := callSQLPositions(file, funcs)
+
 	var out []SQLString
+	seen := map[token.Pos]bool{}
 	ast.Inspect(file, func(n ast.Node) bool {
 		lit, ok := n.(*ast.BasicLit)
 		if !ok || lit.Kind != token.STRING {
 			return true
 		}
-		if !marked[lit.Pos()] {
+		if !marked[lit.Pos()] && !inFunc[lit.Pos()] {
 			return true
 		}
+		if seen[lit.Pos()] {
+			return true
+		}
+		seen[lit.Pos()] = true
 		inner, ok := stripQuotes(lit.Value)
 		if !ok {
 			return true
@@ -47,17 +82,20 @@ func FindAllSQL(src []byte) []SQLString {
 }
 
 // FindSQL returns the SQL text and the byte offset of the cursor
-// within it when the cursor sits inside an SQL-marked string literal.
+// within it when the cursor sits inside a string literal that pgls
+// recognises as SQL — either via a marker comment or because the
+// literal is passed to a function in funcs.
 //
 // line and character are 0-indexed LSP positions; character is in
 // UTF-16 code units (the LSP default).
-func FindSQL(src []byte, line, character int) (sql string, offset int, ok bool) {
+func FindSQL(src []byte, line, character int, funcs SQLFunctions) (sql string, offset int, ok bool) {
 	cursor := posenc.LSPToByte(src, line, character)
 
 	fset, file, marked := parseWithMarkers(src)
 	if file == nil {
 		return "", 0, false
 	}
+	inFunc := callSQLPositions(file, funcs)
 
 	var found *ast.BasicLit
 	ast.Inspect(file, func(n ast.Node) bool {
@@ -68,7 +106,7 @@ func FindSQL(src []byte, line, character int) (sql string, offset int, ok bool) 
 		start := fset.Position(lit.Pos()).Offset
 		end := fset.Position(lit.End()).Offset
 		if start <= cursor && cursor <= end {
-			if marked[lit.Pos()] {
+			if marked[lit.Pos()] || inFunc[lit.Pos()] {
 				found = lit
 			}
 			return false
@@ -134,6 +172,44 @@ func parseWithMarkers(src []byte) (*token.FileSet, *ast.File, map[token.Pos]bool
 		return true
 	})
 	return fset, file, marked
+}
+
+// callSQLPositions returns the set of string-literal positions that are
+// passed as direct arguments to a call expression whose function name
+// matches funcs. Methods are matched by selector name only ("Query"
+// covers `db.Query(...)`, `tx.Query(...)`, `*sql.DB.Query(...)`).
+func callSQLPositions(file *ast.File, funcs SQLFunctions) map[token.Pos]bool {
+	if len(funcs) == 0 {
+		return nil
+	}
+	out := map[token.Pos]bool{}
+	ast.Inspect(file, func(n ast.Node) bool {
+		call, ok := n.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		name := callFuncName(call.Fun)
+		if name == "" || !funcs[name] {
+			return true
+		}
+		for _, arg := range call.Args {
+			if lit, ok := arg.(*ast.BasicLit); ok && lit.Kind == token.STRING {
+				out[lit.Pos()] = true
+			}
+		}
+		return true
+	})
+	return out
+}
+
+func callFuncName(fun ast.Expr) string {
+	switch fn := fun.(type) {
+	case *ast.Ident:
+		return fn.Name
+	case *ast.SelectorExpr:
+		return fn.Sel.Name
+	}
+	return ""
 }
 
 // hasSQLMarker reports whether s (a comment group's joined text)

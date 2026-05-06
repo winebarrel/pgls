@@ -52,11 +52,12 @@ pgls will pick it up automatically:
 { "schemaDir": "db/schema" }
 ```
 
-When both are present, a non-empty `initializationOptions.schemaDir`
-wins. An empty value (`""`) or absent field falls through to
-`.pgls.json` — JSON can't reliably distinguish "explicitly empty"
-from "omitted" in a plain string field, so empty is treated as
-"not provided" rather than "disable schema loading".
+`.pgls.json` is the project's authoritative schema location and
+wins over `initializationOptions` when both are present —
+editors can't accidentally point a colleague's pgls at the wrong
+directory by leaking a stale per-machine setting. Use
+`initializationOptions.schemaDir` only as an ad-hoc override for
+projects that don't ship a `.pgls.json`.
 
 The `schemaDir` field of `.pgls.json` must resolve to a path inside
 the workspace — absolute paths and `..` escapes are rejected, so

@@ -111,15 +111,18 @@ func initialize(ctx *glsp.Context, params *protocol.InitializeParams) (any, erro
 	}, nil
 }
 
-// schemaDirFromOptions resolves the schema directory by trying, in
-// order, the LSP initializationOptions and a project-local .pgls.json
-// at the workspace root. Returning "" leaves the caller to fall back
-// to the CLI flag (or to leave the schema unloaded).
+// schemaDirFromOptions resolves the schema directory. A project-local
+// .pgls.json at the workspace root wins over LSP initializationOptions
+// — the config file is committed alongside the code, so it's the
+// authoritative schema location for the project; init options are
+// useful for editor-specific overrides only when no .pgls.json is
+// present. Returning "" leaves the caller to fall back to the CLI
+// flag (or to leave the schema unloaded).
 func schemaDirFromOptions(params *protocol.InitializeParams) string {
-	if dir := schemaDirFromInitOptions(params); dir != "" {
+	if dir := schemaDirFromConfigFile(params); dir != "" {
 		return dir
 	}
-	return schemaDirFromConfigFile(params)
+	return schemaDirFromInitOptions(params)
 }
 
 func schemaDirFromInitOptions(params *protocol.InitializeParams) string {

@@ -75,10 +75,14 @@ func TestSchemaDir_ConfigFileAcceptsNormalisedRelative(t *testing.T) {
 	assert.Equal(t, filepath.Join(root, "db/schema"), got)
 }
 
-func TestSchemaDir_InitOptionsBeatsConfigFile(t *testing.T) {
+func TestSchemaDir_ConfigFileBeatsInitOptions(t *testing.T) {
+	// .pgls.json is the project's authoritative schema location —
+	// committed alongside the code — so it wins over per-session
+	// initializationOptions. Editor settings can only set schemaDir
+	// for projects that don't have a .pgls.json.
 	root, uri := makeWorkspaceRoot(t)
-	writeConfig(t, root, `{"schemaDir": "loser"}`)
-	got := schemaDirFromOptions(paramsFor(uri, map[string]string{"schemaDir": "winner"}))
+	writeConfig(t, root, `{"schemaDir": "winner"}`)
+	got := schemaDirFromOptions(paramsFor(uri, map[string]string{"schemaDir": "loser"}))
 	assert.Equal(t, filepath.Join(root, "winner"), got)
 }
 

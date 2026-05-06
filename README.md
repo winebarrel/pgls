@@ -62,14 +62,19 @@ pgls will pick it up automatically:
 
 Each entry names a Go function or method (matched by selector, no
 type resolution) and `argIndex` (0-origin) tells pgls which positional
-argument carries the SQL string. Method names are matched without a
-receiver, so `"Query"` covers `db.Query`, `tx.Query`, `*sql.DB.Query`
-all together.
+argument carries the SQL string. **Both `name` and `argIndex` are
+required per entry** — a missing `argIndex` is rejected at validation
+time rather than silently defaulting to 0 (which would be wrong for
+`*Context` methods, where the SQL lives at arg 1). Method names are
+matched without a receiver, so `"Query"` covers `db.Query`, `tx.Query`,
+`*sql.DB.Query` all together.
 
-`sqlFunctions` is optional; omit it to inherit the default
-`database/sql` set (`Query`, `QueryRow`, `Exec`, `Prepare` at
-arg 0, plus their `*Context` variants at arg 1). An explicit empty
-array disables function-call detection so only marker comments fire.
+`sqlFunctions` itself is optional: omit the whole field to inherit
+the default `database/sql` set (`Query`, `QueryRow`, `Exec`,
+`Prepare` at arg 0, plus their `*Context` variants at arg 1), or set
+it to `[]` to disable function-call detection so only marker comments
+fire. Per-entry omission of `argIndex` is **not** the way to express
+either — use one of those two switches instead.
 
 `.pgls.json` is the project's authoritative schema location and
 wins over `initializationOptions` when both are present —

@@ -95,6 +95,16 @@ func TestSchemaDir_InvalidJSONIgnored(t *testing.T) {
 	assert.Equal(t, "", got, "invalid JSON should not crash, just yield empty")
 }
 
+func TestSchemaDir_EmptyInitOptionsFallsThroughToConfigFile(t *testing.T) {
+	// Pinning the documented precedence: an empty schemaDir in
+	// initializationOptions is treated as "not provided", not as
+	// "explicitly disable", so .pgls.json still applies.
+	root, uri := makeWorkspaceRoot(t)
+	writeConfig(t, root, `{"schemaDir": "fallback"}`)
+	got := schemaDirFromOptions(paramsFor(uri, map[string]string{"schemaDir": ""}))
+	assert.Equal(t, filepath.Join(root, "fallback"), got)
+}
+
 func TestSchemaDir_EmptyConfigSchemaDir(t *testing.T) {
 	root, uri := makeWorkspaceRoot(t)
 	writeConfig(t, root, `{"schemaDir": ""}`)

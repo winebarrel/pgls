@@ -31,6 +31,16 @@ root):
 { "initializationOptions": { "schemaDir": "db/schema" } }
 ```
 
+If the editor doesn't expose a clean way to pass `initializationOptions`
+(classic Vim, plain CLI), drop a `.pgls.json` at the workspace root and
+pgls will pick it up automatically:
+
+```json
+{ "schemaDir": "db/schema" }
+```
+
+`initializationOptions` wins when both are present.
+
 ## Editor setup
 
 ### Neovim (built-in LSP)

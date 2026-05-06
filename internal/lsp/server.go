@@ -109,7 +109,18 @@ func initialize(ctx *glsp.Context, params *protocol.InitializeParams) (any, erro
 	}, nil
 }
 
+// schemaDirFromOptions resolves the schema directory by trying, in
+// order, the LSP initializationOptions and a project-local .pgls.json
+// at the workspace root. Returning "" leaves the caller to fall back
+// to the CLI flag (or to leave the schema unloaded).
 func schemaDirFromOptions(params *protocol.InitializeParams) string {
+	if dir := schemaDirFromInitOptions(params); dir != "" {
+		return dir
+	}
+	return schemaDirFromConfigFile(params)
+}
+
+func schemaDirFromInitOptions(params *protocol.InitializeParams) string {
 	if params.InitializationOptions == nil {
 		return ""
 	}
@@ -121,16 +132,45 @@ func schemaDirFromOptions(params *protocol.InitializeParams) string {
 	if err := json.Unmarshal(b, &opts); err != nil {
 		return ""
 	}
-	if opts.SchemaDir == "" {
+	return resolveSchemaDir(opts.SchemaDir, workspaceRoot(params))
+}
+
+// schemaDirFromConfigFile looks for `.pgls.json` at the workspace root
+// and parses its `schemaDir` field. Editors that don't have a clean way
+// to pass initializationOptions (classic Vim, plain CLI usage) can drop
+// this file in the project so pgls picks it up automatically.
+func schemaDirFromConfigFile(params *protocol.InitializeParams) string {
+	root := workspaceRoot(params)
+	if root == "" {
 		return ""
 	}
-	if filepath.IsAbs(opts.SchemaDir) {
-		return opts.SchemaDir
+	path := filepath.Join(root, ".pgls.json")
+	b, err := os.ReadFile(path)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			log.Printf("read %s: %v", path, err)
+		}
+		return ""
 	}
-	if root := workspaceRoot(params); root != "" {
-		return filepath.Join(root, opts.SchemaDir)
+	var cfg initOptions
+	if err := json.Unmarshal(b, &cfg); err != nil {
+		log.Printf("parse %s: %v", path, err)
+		return ""
 	}
-	return opts.SchemaDir
+	return resolveSchemaDir(cfg.SchemaDir, root)
+}
+
+func resolveSchemaDir(dir, root string) string {
+	if dir == "" {
+		return ""
+	}
+	if filepath.IsAbs(dir) {
+		return dir
+	}
+	if root != "" {
+		return filepath.Join(root, dir)
+	}
+	return dir
 }
 
 func workspaceRoot(params *protocol.InitializeParams) string {

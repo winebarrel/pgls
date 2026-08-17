@@ -5,14 +5,13 @@ go 1.25.0
 require (
 	github.com/fsnotify/fsnotify v1.10.1
 	github.com/pganalyze/pg_query_go/v6 v6.2.2
-	github.com/stretchr/testify v1.11.1
+	github.com/stretchr/testify v1.12.0
 	github.com/tliron/glsp v0.2.3-0.20250617204849-59d6e3155c81
 	github.com/wasilibs/go-pgquery v0.0.0-20260728010200-155ebad2880e
 )
 
 require (
 	github.com/aymanbagabas/go-osc52/v2 v2.0.1 // indirect
-	github.com/davecgh/go-spew v1.1.1 // indirect
 	github.com/gorilla/websocket v1.5.3 // indirect
 	github.com/iancoleman/strcase v0.3.0 // indirect
 	github.com/lucasb-eyer/go-colorful v1.2.0 // indirect
@@ -21,7 +20,6 @@ require (
 	github.com/muesli/termenv v0.15.2 // indirect
 	github.com/petermattis/goid v0.0.0-20180202154549-b0b1615b78e5 // indirect
 	github.com/pkg/errors v0.9.1 // indirect
-	github.com/pmezard/go-difflib v1.0.0 // indirect
 	github.com/rivo/uniseg v0.2.0 // indirect
 	github.com/sasha-s/go-deadlock v0.3.1 // indirect
 	github.com/segmentio/ksuid v1.0.4 // indirect

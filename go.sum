@@ -41,8 +41,8 @@ github.com/tliron/glsp v0.2.3-0.20250617204849-59d6e3155c81 h1:gQPs3aNGs4z0AWq4v
 github.com/tliron/glsp v0.2.3-0.20250617204849-59d6e3155c81/go.mod h1:0mr4+bYwGddJfGuaxnUZBSxkshSzFOIyTmBRvfJDBo4=
 github.com/tliron/kutil v0.3.25 h1:oaPN6K0zsH3KcVnsocA3kAlfR0XYDzADob6xdjqe56k=
 github.com/tliron/kutil v0.3.25/go.mod h1:ZvOJuF6PTGvjfHmn2dFcgz+EDEzRQqQUztK+7djlXIw=
-github.com/wasilibs/go-pgquery v0.0.0-20260901011208-ba189f3f52f5 h1:MpaJ23l9Q6dDwesamctK6eeLex7I6B1Io5VVFWHd2to=
-github.com/wasilibs/go-pgquery v0.0.0-20260901011208-ba189f3f52f5/go.mod h1:ZSyYLCRbk2xPqu7lgfrDSSHm+g/7Rxk6JK4KE2cxJ3s=
+github.com/wasilibs/go-pgquery v0.0.0-20260904013310-2818e6afd9df h1:lbjaeLLuc2yPtmvUBUUsoiLiEQ7GGcu+3mHC7tT8Pcw=
+github.com/wasilibs/go-pgquery v0.0.0-20260904013310-2818e6afd9df/go.mod h1:ZSyYLCRbk2xPqu7lgfrDSSHm+g/7Rxk6JK4KE2cxJ3s=
 github.com/wasilibs/wazero-helpers v0.0.0-20250123031827-cd30c44769bb h1:gQ+ZV4wJke/EBKYciZ2MshEouEHFuinB85dY3f5s1q8=
 github.com/wasilibs/wazero-helpers v0.0.0-20250123031827-cd30c44769bb/go.mod h1:jMeV4Vpbi8osrE/pKUxRZkVaA0EX7NZN0A9/oRzgpgY=
 go.yaml.in/yaml/v3 v3.0.5 h1:N6y/pJk8buWs9NY5ERU2HSMfm+IuD/OtfdAnq6kESPw=

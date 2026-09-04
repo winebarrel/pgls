@@ -7,7 +7,7 @@ require (
 	github.com/pganalyze/pg_query_go/v6 v6.2.2
 	github.com/stretchr/testify v1.12.1
 	github.com/tliron/glsp v0.2.3-0.20250617204849-59d6e3155c81
-	github.com/wasilibs/go-pgquery v0.0.0-20260904013310-2818e6afd9df
+	github.com/wasilibs/go-pgquery v0.0.0-20260904030559-0fedd6786608
 )
 
 require (
@@ -32,5 +32,5 @@ require (
 	golang.org/x/crypto v0.26.0 // indirect
 	golang.org/x/sys v0.44.0 // indirect
 	golang.org/x/term v0.23.0 // indirect
-	google.golang.org/protobuf v1.36.11 // indirect
+	google.golang.org/protobuf v1.36.12 // indirect
 )

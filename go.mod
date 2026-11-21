@@ -1,13 +1,13 @@
 module github.com/winebarrel/pgls
 
-go 1.25.0
+go 1.26.0
 
 require (
 	github.com/fsnotify/fsnotify v1.10.1
 	github.com/pganalyze/pg_query_go/v6 v6.2.5
 	github.com/stretchr/testify v1.12.1
 	github.com/tliron/glsp v0.2.3-0.20250617204849-59d6e3155c81
-	github.com/wasilibs/go-pgquery v0.0.0-20261027025405-3048dd293555
+	github.com/wasilibs/go-pgquery v0.0.0-20261117022153-47142ee672c1
 )
 
 require (
@@ -30,7 +30,7 @@ require (
 	github.com/wasilibs/wazero-helpers v0.0.0-20250123031827-cd30c44769bb // indirect
 	go.yaml.in/yaml/v3 v3.0.5 // indirect
 	golang.org/x/crypto v0.26.0 // indirect
-	golang.org/x/sys v0.47.0 // indirect
+	golang.org/x/sys v0.49.0 // indirect
 	golang.org/x/term v0.23.0 // indirect
 	google.golang.org/protobuf v1.36.12 // indirect
 )

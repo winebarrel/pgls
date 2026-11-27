@@ -7,7 +7,7 @@ require (
 	github.com/pganalyze/pg_query_go/v6 v6.2.5
 	github.com/stretchr/testify v1.12.1
 	github.com/tliron/glsp v0.2.3-0.20250617204849-59d6e3155c81
-	github.com/wasilibs/go-pgquery v0.0.0-20261124022233-3939604ca45d
+	github.com/wasilibs/go-pgquery v0.0.0-20261127020734-be0bec80c2a1
 )
 
 require (
